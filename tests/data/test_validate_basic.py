@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from bot.data.validate import CHECKS, DataValidationError, ValidationReport, validate_frame
-from tests.data.fakes import DAY_MS, START, START_MS, frame
+from tests.data.fakes import DATA, DAY_MS, START, START_MS, frame
 
 
 def ts(i: int, step: int = DAY_MS) -> pd.Timestamp:
@@ -23,12 +23,12 @@ def with_open_at(df: pd.DataFrame, values: list[int]) -> pd.DataFrame:
 
 def _defect(df: pd.DataFrame, tf: str = "1d", **kw) -> DataValidationError:
     with pytest.raises(DataValidationError) as info:
-        validate_frame(df, tf, **kw)
+        validate_frame(df, tf, DATA, **kw)
     return info.value
 
 
 def test_good_frame_reports_range() -> None:
-    report = validate_frame(frame(5), "1d", now=START + timedelta(days=5))
+    report = validate_frame(frame(5), "1d", DATA, now=START + timedelta(days=5))
     assert report == ValidationReport(
         tf="1d",
         rows=5,
@@ -73,7 +73,7 @@ def test_misaligned() -> None:
 def test_aligned_4h_is_not_aligned_1d() -> None:
     step = 4 * 3600 * 1000
     good = with_open_at(frame(3), [START_MS + i * step for i in range(3)])
-    assert validate_frame(good, "4h").rows == 3
+    assert validate_frame(good, "4h", DATA).rows == 3
     assert "aligned" in _defect(good, "1d").defect
 
 
@@ -136,8 +136,8 @@ def test_unknown_source() -> None:
 
 def test_last_candle_must_be_closed_when_now_given() -> None:
     df = frame(3)
-    assert validate_frame(df, "1d").rows == 3  # no now: not checked
-    assert validate_frame(df, "1d", now=START + timedelta(days=3)).rows == 3
+    assert validate_frame(df, "1d", DATA).rows == 3  # no now: not checked
+    assert validate_frame(df, "1d", DATA, now=START + timedelta(days=3)).rows == 3
     err = _defect(df, now=START + timedelta(days=2, hours=23))
     assert err.defect == "last candle is not closed" and err.open_at == ts(2)
 

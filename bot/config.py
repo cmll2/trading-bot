@@ -98,6 +98,11 @@ class DataSettings(_Frozen):
     timeframes: tuple[DataTimeframe, ...]
     fetch_max_retries: int = Field(ge=0, strict=True)
     fetch_retry_base_seconds: float = Field(gt=0, le=300, allow_inf_nan=False)
+    # FR-03: start of the history the strategy uses; the synthetic-ratio cap applies from here.
+    history_start: date
+    # Kraken's archive omits no-trade intervals: fill them flat (synthetic rows) or fail.
+    no_trade_policy: Literal["fill_flat", "fail"]
+    max_synthetic_ratio: Decimal = Field(ge=0, lt=1, allow_inf_nan=False)
 
     @field_validator("timeframes")
     @classmethod
@@ -147,6 +152,8 @@ class Settings(_Frozen):
             raise ValueError("execution.window_hours must not exceed the strategy timeframe (AD-5)")
         if self.execution.reprice_interval_minutes * 60 > window_s:
             raise ValueError("execution.reprice_interval_minutes must fit in the window")
+        if self.data.history_start >= self.backtest.holdout_start:
+            raise ValueError("data.history_start must be before backtest.holdout_start")
         return self
 
 

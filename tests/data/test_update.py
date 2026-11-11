@@ -125,3 +125,48 @@ def test_defective_cache_is_refused_before_fetching(settings: Settings) -> None:
     with pytest.raises(DataValidationError):
         update_timeframe(settings, ex, _clock(5), "1d")
     assert ex.calls == []
+
+
+def test_update_applies_no_trade_policy_before_validating(settings: Settings, monkeypatch) -> None:
+    import bot.data.update as update_mod
+
+    calls: list[tuple[str, object]] = []
+    real_apply = update_mod.apply_no_trade_policy
+    real_validate = update_mod.validate_frame
+    real_write = update_mod.write_cache
+
+    def _apply(df: pd.DataFrame, tf: str, policy: str) -> pd.DataFrame:
+        assert policy == "fill_flat"
+        out = real_apply(df, tf, policy)
+        calls.append(("apply", out))
+        return out
+
+    def _validate(df: pd.DataFrame, *a: object, **k: object) -> object:
+        calls.append(("validate", df))
+        return real_validate(df, *a, **k)
+
+    def _write(path: Path, df: pd.DataFrame) -> None:
+        calls.append(("write", df))
+        real_write(path, df)
+
+    monkeypatch.setattr(update_mod, "apply_no_trade_policy", _apply)
+    monkeypatch.setattr(update_mod, "validate_frame", _validate)
+    monkeypatch.setattr(update_mod, "write_cache", _write)
+    result = update_timeframe(settings, FakeExchange([candles(START_MS, 5)]), _clock(5), "1d")
+
+    assert [name for name, _ in calls] == ["apply", "validate", "write"]
+    applied = calls[0][1]
+    assert calls[1][1] is applied and calls[2][1] is applied and result is applied
+
+
+def test_cache_with_unfilled_no_trade_gap_is_refused_before_fetching(settings: Settings) -> None:
+    from tests.data.fakes import rows
+
+    path = _path(settings)
+    write_cache(path, rows([0, 1, 3], ["archive"] * 3))
+    before = path.read_bytes()
+    ex = FakeExchange([candles(START_MS + 4 * DAY_MS, 2)])
+    with pytest.raises(DataValidationError) as info:
+        update_timeframe(settings, ex, _clock(6), "1d")
+    assert info.value.defect == "no-trade gap not filled"
+    assert ex.calls == [] and path.read_bytes() == before

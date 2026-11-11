@@ -1,9 +1,16 @@
 """Candle validation: fail loudly, never repair (AD-18, FR-03).
 
 ``validate_frame`` runs ``CHECKS`` in order and raises ``DataValidationError`` at the first
-defect, naming it and the offending ``open_at``. Each check is a plain function
-``(df, tf) -> None`` so later stories can append checks (OHLC consistency, no-trade policy)
-without touching the existing ones.
+defect, naming it and the offending ``open_at``; it then applies the explicit
+``data.no_trade_policy`` and the synthetic-ratio cap. Each check is a plain function
+``(df, tf) -> None``. Validation is read-only: it never modifies, drops, reorders or fills
+rows.
+
+Kraken's archive omits intervals with no trade. Missing intervals are therefore classified
+(``classify_missing``): a hole whose neighbours are both ``archive``/``synthetic`` rows is a
+legitimate ``no_trade`` interval; any other hole (inside the API range or between sources)
+is a ``download`` gap and is never filled. Only writers (import/update) fill no-trade holes,
+through ``apply_no_trade_policy``, before validating; every filled row is ``synthetic``.
 """
 
 from __future__ import annotations
@@ -11,10 +18,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
+from typing import Literal
 
+import numpy as np
 import pandas as pd
 
+from bot.config import DataSettings
 from bot.data.cache import (
     COLUMNS,
     DTYPES,
@@ -22,8 +33,12 @@ from bot.data.cache import (
     PRICE_COLUMNS,
     SOURCES,
     interval_ms,
+    normalize,
     read_cache,
 )
+
+GapKind = Literal["no_trade", "download"]
+NO_TRADE_NEIGHBOURS = ("archive", "synthetic")
 
 
 class DataValidationError(ValueError):
@@ -42,6 +57,9 @@ class ValidationReport:
     first: pd.Timestamp | None
     last: pd.Timestamp | None
     sources: dict[str, int] = field(default_factory=dict)
+    synthetic_rows: int = 0
+    synthetic_ratio_after_start: float = 0.0  # synthetic / rows from data.history_start on
+    synthetic_by_year: dict[int, int] = field(default_factory=dict)  # years with synthetic rows
 
 
 def read_cache_checked(path: Path) -> pd.DataFrame | None:
@@ -54,6 +72,11 @@ def read_cache_checked(path: Path) -> pd.DataFrame | None:
 
 def _ms(df: pd.DataFrame) -> pd.Series:
     return df["open_at"].astype("int64")
+
+
+def _bool(s: pd.Series) -> np.ndarray:
+    """Nullable boolean Series -> numpy bool array, NA counted as False."""
+    return s.fillna(False).to_numpy(dtype=bool)
 
 
 def check_columns(df: pd.DataFrame, tf: str) -> None:
@@ -116,14 +139,98 @@ def check_aligned(df: pd.DataFrame, tf: str) -> None:
         )
 
 
+def check_ohlc(df: pd.DataFrame, tf: str) -> None:
+    """Positive finite prices, high/low bracket open and close, volume and trades >= 0."""
+    o, h, lo, c = (df[col].to_numpy() for col in ("open", "high", "low", "close"))
+    prices = np.stack([o, h, lo, c])
+    with np.errstate(invalid="ignore"):
+        bad = (
+            ~np.isfinite(prices).all(axis=0)
+            | (prices <= 0).any(axis=0)
+            | (h < lo)
+            | (h < np.maximum(o, c))
+            | (lo > np.minimum(o, c))
+        )
+    if bad.any():
+        raise DataValidationError("inconsistent OHLC", df["open_at"].iloc[int(bad.argmax())])
+    vol = df["volume"].to_numpy()
+    bad = ~np.isfinite(vol) | (vol < 0)
+    if bad.any():
+        raise DataValidationError(
+            "non-finite or negative volume", df["open_at"].iloc[int(bad.argmax())]
+        )
+    bad = _bool(df["trades"] < 0)
+    if bad.any():
+        raise DataValidationError("negative trades", df["open_at"].iloc[int(bad.argmax())])
+
+
+def check_synthetic_rows(df: pd.DataFrame, tf: str) -> None:
+    """A synthetic row is a flat no-trade candle: O=H=L=C=previous close, volume 0, trades 0,
+    and every run of consecutive synthetic rows sits between two ``archive`` rows (no-trade
+    intervals exist only inside the archive range; an API gap is never forward-filled)."""
+    synth = _bool(df["source"] == "synthetic")
+    if not synth.any():
+        return
+    archive = _bool(df["source"] == "archive")
+    prev_synth = np.concatenate([[False], synth[:-1]])
+    next_synth = np.concatenate([synth[1:], [False]])
+    prev_archive = np.concatenate([[False], archive[:-1]])
+    next_archive = np.concatenate([archive[1:], [False]])
+    starts = np.flatnonzero(synth & ~prev_synth)
+    ends = np.flatnonzero(synth & ~next_synth)  # ends[k] closes the run opened at starts[k]
+    bad_runs = ~prev_archive[starts] | ~next_archive[ends]
+    if bad_runs.any():
+        raise DataValidationError(
+            "synthetic candle outside archive range",
+            df["open_at"].iloc[int(starts[int(bad_runs.argmax())])],
+        )
+    prev_close = df["close"].shift(1).to_numpy()  # NaN for the first row: never equal
+    flat = np.ones(len(df), dtype=bool)
+    for col in ("open", "high", "low", "close"):
+        flat &= df[col].to_numpy() == prev_close
+    ok = flat & (df["volume"].to_numpy() == 0) & _bool(df["trades"] == 0)
+    bad = synth & ~ok
+    if bad.any():
+        raise DataValidationError(
+            "inconsistent synthetic candle", df["open_at"].iloc[int(bad.argmax())]
+        )
+
+
+def _gaps(df: pd.DataFrame, tf: str) -> list[tuple[int, int, GapKind]]:
+    """Holes in a sorted, unique, aligned frame as ``(row_before, missing_count, kind)``."""
+    if len(df) < 2:
+        return []
+    missing = np.diff(_ms(df).to_numpy()) // interval_ms(tf) - 1
+    source = df["source"].to_numpy(dtype=object)
+    out: list[tuple[int, int, GapKind]] = []
+    for i in np.flatnonzero(missing > 0):
+        no_trade = source[i] in NO_TRADE_NEIGHBOURS and source[i + 1] in NO_TRADE_NEIGHBOURS
+        out.append((int(i), int(missing[i]), "no_trade" if no_trade else "download"))
+    return out
+
+
+def _after_row(df: pd.DataFrame, tf: str, row: int, k: int = 1) -> pd.Timestamp:
+    return pd.Timestamp(int(_ms(df).iloc[row]) + k * interval_ms(tf), unit="ms", tz="UTC")
+
+
+def classify_missing(df: pd.DataFrame, tf: str) -> list[tuple[pd.Timestamp, GapKind]]:
+    """Every missing ``open_at`` with its kind: ``no_trade`` when both neighbouring rows are
+    ``archive``/``synthetic``, else ``download``. Expects a sorted, unique, aligned frame."""
+    return [
+        (_after_row(df, tf, row, k), kind)
+        for row, count, kind in _gaps(df, tf)
+        for k in range(1, count + 1)
+    ]
+
+
 def check_no_missing_interval(df: pd.DataFrame, tf: str) -> None:
-    step = interval_ms(tf)
-    ms = _ms(df)
-    gap = ms.diff() > step
-    if gap.any():
-        idx = gap.idxmax()
-        first_missing = pd.Timestamp(int(ms.iloc[idx - 1]) + step, unit="ms", tz="UTC")
-        raise DataValidationError("download gap", first_missing)
+    """Any hole is a defect: validation never fills, so a no-trade hole means a writer
+    skipped ``apply_no_trade_policy``."""
+    gaps = _gaps(df, tf)
+    if gaps:
+        row, _count, kind = gaps[0]
+        defect = "download gap" if kind == "download" else "no-trade gap not filled"
+        raise DataValidationError(defect, _after_row(df, tf, row))
 
 
 CHECKS: list[Callable[[pd.DataFrame, str], None]] = [
@@ -135,13 +242,70 @@ CHECKS: list[Callable[[pd.DataFrame, str], None]] = [
     check_unique,
     check_increasing,
     check_aligned,
+    check_ohlc,
+    check_synthetic_rows,
     check_no_missing_interval,
 ]
 
+# What a writer must know is sound before it can classify and fill holes.
+_STRUCTURE_CHECKS = CHECKS[: CHECKS.index(check_aligned) + 1]
 
-def validate_frame(df: pd.DataFrame, tf: str, now: datetime | None = None) -> ValidationReport:
-    """Run every check; if ``now`` is given, also require the last candle to be closed."""
-    df = df.reset_index(drop=True)
+
+def apply_no_trade_policy(df: pd.DataFrame, tf: str, policy: str) -> pd.DataFrame:
+    """Writers only: return a new frame, sorted by ``open_at``, with no-trade holes handled
+    per ``data.no_trade_policy``. The input is not modified and must already be sorted with
+    the exact cache dtypes.
+
+    ``fill_flat`` inserts, for each missing interval between two ``archive``/``synthetic``
+    rows, a ``synthetic`` row with O=H=L=C=the close of the row before the hole, volume 0,
+    trades 0. ``fail`` raises ``no-trade gap`` at the first such interval. Download gaps
+    (API range or between sources) are never filled; ``validate_frame`` reports them.
+    Structural defects (columns, dtypes, nulls, order, duplicates, alignment) raise
+    ``DataValidationError`` here, checked before anything is cast or filled.
+    """
+    if policy not in ("fill_flat", "fail"):
+        raise ValueError(f"unknown no_trade_policy {policy!r}")
+    frame = df.reset_index(drop=True)  # positional index only; values and order unchanged
+    for check in _STRUCTURE_CHECKS:  # on the input as given: no casting, no sorting
+        check(frame, tf)
+    gaps = [g for g in _gaps(frame, tf) if g[2] == "no_trade"]
+    if not gaps:
+        return frame
+    if policy == "fail":
+        raise DataValidationError("no-trade gap", _after_row(frame, tf, gaps[0][0]))
+
+    rows = np.array([g[0] for g in gaps], dtype="int64")
+    counts = np.array([g[1] for g in gaps], dtype="int64")
+    steps = np.concatenate([np.arange(1, n + 1, dtype="int64") for n in counts])
+    open_ms = np.repeat(_ms(frame).to_numpy()[rows], counts) + steps * interval_ms(tf)
+    price = np.repeat(frame["close"].to_numpy()[rows], counts)
+    n = len(open_ms)
+    filled = normalize(
+        pd.DataFrame(
+            {
+                "open_at": pd.to_datetime(open_ms, unit="ms", utc=True),
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": np.zeros(n),
+                "trades": np.zeros(n, dtype="int64"),
+                "source": ["synthetic"] * n,
+            }
+        )
+    )
+    out = pd.concat([frame, filled], ignore_index=True)
+    return out.sort_values("open_at", kind="stable").reset_index(drop=True)
+
+
+def validate_frame(
+    df: pd.DataFrame, tf: str, data_settings: DataSettings, now: datetime | None = None
+) -> ValidationReport:
+    """Run every check, then the no-trade policy and the synthetic-ratio cap. Read-only.
+
+    If ``now`` is given, the last candle must also be closed.
+    """
+    df = df.reset_index(drop=True)  # a new object: the caller's frame is never changed
     for check in CHECKS:
         check(df, tf)
     if df.empty:
@@ -149,6 +313,31 @@ def validate_frame(df: pd.DataFrame, tf: str, now: datetime | None = None) -> Va
     first, last = df["open_at"].iloc[0], df["open_at"].iloc[-1]
     if now is not None and int(_ms(df).iloc[-1]) + interval_ms(tf) > now.timestamp() * 1000:
         raise DataValidationError("last candle is not closed", last)
+
+    synth = _bool(df["source"] == "synthetic")
+    if data_settings.no_trade_policy == "fail" and synth.any():
+        raise DataValidationError(
+            "synthetic candle under no_trade_policy=fail", df["open_at"].iloc[int(synth.argmax())]
+        )
+    after = (df["open_at"] >= pd.Timestamp(data_settings.history_start, tz="UTC")).to_numpy()
+    synth_after, rows_after = int((synth & after).sum()), int(after.sum())
+    ratio = Decimal(synth_after) / Decimal(rows_after) if rows_after else Decimal(0)
+    if ratio > data_settings.max_synthetic_ratio:
+        raise DataValidationError(
+            f"synthetic ratio {float(ratio):.6g} ({synth_after}/{rows_after} rows from "
+            f"{data_settings.history_start}) exceeds max_synthetic_ratio "
+            f"{data_settings.max_synthetic_ratio}"
+        )
+
+    years = df.loc[synth, "open_at"].dt.year.value_counts().sort_index()
     counts = df["source"].value_counts()
-    sources = {s: int(counts.get(s, 0)) for s in SOURCES}
-    return ValidationReport(tf=tf, rows=len(df), first=first, last=last, sources=sources)
+    return ValidationReport(
+        tf=tf,
+        rows=len(df),
+        first=first,
+        last=last,
+        sources={s: int(counts.get(s, 0)) for s in SOURCES},
+        synthetic_rows=int(synth.sum()),
+        synthetic_ratio_after_start=float(ratio),
+        synthetic_by_year={int(y): int(n) for y, n in years.items()},
+    )

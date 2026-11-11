@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from collections.abc import Callable
 from datetime import timedelta
@@ -10,12 +11,14 @@ from pathlib import Path
 import ccxt
 import pandas as pd
 import pytest
+import yaml
 
 from bot import cli
 from bot.clock import FakeClock
 from bot.data.cache import COLUMNS, DTYPES, read_cache, write_cache
+from bot.data.validate import apply_no_trade_policy
 from tests.conftest import REPO_ROOT
-from tests.data.fakes import DAY_MS, START, START_MS, FakeExchange, candles, frame
+from tests.data.fakes import DAY_MS, START, START_MS, FakeExchange, candles, frame, rows
 
 
 @pytest.fixture
@@ -266,3 +269,162 @@ def test_default_factories_are_public_and_real_clock() -> None:
 
     assert cli._exchange_factory is make_public_exchange
     assert cli._clock_factory is SystemClock
+
+
+# --- story 2: OHLC, sources, gap classification, no-trade policy, synthetic cap ---------
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _synthetic_at(df: pd.DataFrame, i: int) -> pd.DataFrame:
+    """Turn row ``i`` into a correct flat synthetic candle."""
+    df = df.copy()
+    prev = df.loc[i - 1, "close"]
+    df.loc[i, ["open", "high", "low", "close", "volume"]] = [prev, prev, prev, prev, 0.0]
+    df.loc[i, "trades"] = 0
+    df.loc[i, "source"] = "synthetic"
+    return df
+
+
+def _mutate(df: pd.DataFrame, i: int, **values: object) -> pd.DataFrame:
+    df = df.copy()
+    for col, value in values.items():
+        df.loc[i, col] = value
+    return df
+
+
+ARCH = ["archive"] * 4
+STORY2_DEFECTS: dict[str, tuple[Callable[[], pd.DataFrame], str, pd.Timestamp | None]] = {
+    "high_below_low": (
+        lambda: _mutate(rows([0, 1, 2, 3], ARCH), 1, high=50.0),
+        "inconsistent OHLC",
+        _ts(1),
+    ),
+    "low_above_open": (
+        lambda: _mutate(rows([0, 1, 2, 3], ARCH), 2, low=102.5),
+        "inconsistent OHLC",
+        _ts(2),
+    ),
+    "zero_price": (
+        lambda: _mutate(rows([0, 1, 2, 3], ARCH), 1, open=0.0),
+        "inconsistent OHLC",
+        _ts(1),
+    ),
+    "nan_price_is_null": (
+        lambda: _mutate(rows([0, 1, 2, 3], ARCH), 1, close=float("nan")),
+        "null close",
+        _ts(1),
+    ),
+    "inf_price": (
+        lambda: _mutate(rows([0, 1, 2, 3], ARCH), 3, high=float("inf")),
+        "inconsistent OHLC",
+        _ts(3),
+    ),
+    "negative_volume": (
+        lambda: _mutate(rows([0, 1, 2, 3], ARCH), 2, volume=-1.0),
+        "negative volume",
+        _ts(2),
+    ),
+    "unknown_source": (
+        lambda: _mutate(rows([0, 1, 2, 3], ARCH), 1, source="foo"),
+        "unknown source",
+        _ts(1),
+    ),
+    "api_gap": (lambda: rows([0, 1, 3], ["api"] * 3), "download gap", _ts(2)),
+    "archive_then_api_gap": (lambda: rows([0, 2], ["archive", "api"]), "download gap", _ts(1)),
+    "api_then_archive_gap": (lambda: rows([0, 2], ["api", "archive"]), "download gap", _ts(1)),
+    "unfilled_no_trade_gap": (
+        lambda: rows([0, 1, 3], ["archive"] * 3),
+        "no-trade gap not filled",
+        _ts(2),
+    ),
+    "synthetic_with_volume": (
+        lambda: _mutate(_synthetic_at(rows([0, 1, 2], ["archive"] * 3), 1), 1, volume=0.5),
+        "inconsistent synthetic candle",
+        _ts(1),
+    ),
+    "synthetic_not_previous_close": (
+        lambda: _mutate(
+            _synthetic_at(rows([0, 1, 2], ["archive"] * 3), 1),
+            1,
+            open=100.4,
+            high=100.4,
+            low=100.4,
+            close=100.4,
+        ),
+        "inconsistent synthetic candle",
+        _ts(1),
+    ),
+    "synthetic_ratio_cap": (
+        lambda: _synthetic_at(rows([0, 1, 2], ["archive"] * 3), 1),
+        "exceeds max_synthetic_ratio 0.001",
+        None,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(STORY2_DEFECTS))
+def test_story2_defect_exits_4_and_keeps_sha256(repo, wire, capsys, name) -> None:
+    """Each defect -> exit 4, stderr names it (+ open_at), cache sha256 unchanged."""
+    build, defect, when = STORY2_DEFECTS[name]
+    path = _cache(repo)
+    path.parent.mkdir(parents=True)
+    build().to_parquet(path, index=False)  # raw write: the defect must reach the file
+    before = _sha256(path)
+    wire(FakeExchange(), FakeClock(START + timedelta(days=30)))
+
+    code = cli.main(["data", *_args(repo, "validate", "--timeframe", "1d")], env={})
+
+    err = capsys.readouterr().err
+    assert code == cli.EXIT_DATA_ERROR == 4
+    assert "DATA ERROR [1d]" in err and defect in err, err
+    if when is not None:
+        assert f"at {when}" in err
+    assert _sha256(path) == before
+
+
+def test_synthetic_rows_under_fail_policy_exit_4(repo, wire, capsys) -> None:
+    cfg = repo / "config.yaml"
+    raw = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    raw["data"]["no_trade_policy"] = "fail"
+    raw["data"]["max_synthetic_ratio"] = "0.5"
+    cfg.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    path = _cache(repo)
+    write_cache(path, _synthetic_at(rows([0, 1, 2], ["archive"] * 3), 1))
+    before = _sha256(path)
+    wire(FakeExchange(), FakeClock(START + timedelta(days=30)))
+
+    code = cli.main(["data", *_args(repo, "validate", "--timeframe", "1d")], env={})
+
+    err = capsys.readouterr().err
+    assert code == 4
+    assert f"synthetic candle under no_trade_policy=fail at {_ts(1)}" in err
+    assert _sha256(path) == before
+
+
+def test_archive_gap_filled_by_writer_then_validates(repo, wire, capsys) -> None:
+    """AC2: a writer applies fill_flat; the file holds a flat synthetic row; validate exits 0."""
+    n = 1500  # one synthetic row in 1500 stays under max_synthetic_ratio 0.001
+    days = [d for d in range(n + 1) if d != 700]
+    archive = rows(days, ["archive"] * n)
+    path = _cache(repo)
+    write_cache(path, apply_no_trade_policy(archive, "1d", "fill_flat"))  # the writer's job
+    before = _sha256(path)
+    wire(FakeExchange(), FakeClock(START + timedelta(days=n + 1)))
+
+    code = cli.main(["data", *_args(repo, "validate", "--timeframe", "1d")], env={})
+
+    out = capsys.readouterr().out
+    assert code == cli.EXIT_OK
+    df = read_cache(path)
+    assert df is not None and len(df) == n + 1
+    row = df[df["source"] == "synthetic"]
+    assert list(row["open_at"]) == [_ts(700)]
+    prev_close = archive.loc[699, "close"]
+    assert row[["open", "high", "low", "close"]].iloc[0].tolist() == [prev_close] * 4
+    assert row["volume"].iloc[0] == 0 and row["trades"].iloc[0] == 0
+    assert "synthetic=1" in out and "synthetic_ratio_from_2017-01-01=0.000666" in out
+    assert "synthetic_by_year={2025: 1}" in out
+    assert _sha256(path) == before  # validate never rewrites

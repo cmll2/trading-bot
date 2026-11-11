@@ -151,7 +151,7 @@ def _data_command(args: argparse.Namespace) -> int:
         try:
             if args.data_command == "update":
                 frame = update_timeframe(settings, exchange, clock, tf)
-                report = validate_frame(frame, tf)
+                report = validate_frame(frame, tf, settings.data)
             else:
                 path = cache_path(settings.paths.var_dir, settings.pairs[0], tf)
                 frame = read_cache_checked(path)
@@ -159,7 +159,7 @@ def _data_command(args: argparse.Namespace) -> int:
                     _err(f"DATA ERROR [{tf}]: no cache for {tf} ({path})")
                     failed = True
                     continue
-                report = validate_frame(frame, tf, now=clock.now())
+                report = validate_frame(frame, tf, settings.data, now=clock.now())
         except (FetchError, DataValidationError) as exc:
             _data_error(tf, exc)
             failed = True
@@ -170,8 +170,12 @@ def _data_command(args: argparse.Namespace) -> int:
             continue
         print(
             f"{tf}: rows={report.rows} first={report.first} last={report.last} "
-            f"sources={report.sources}"
+            f"sources={report.sources} synthetic={report.synthetic_rows} "
+            f"synthetic_ratio_from_{settings.data.history_start}="
+            f"{report.synthetic_ratio_after_start:.6g}"
         )
+        if report.synthetic_by_year:
+            print(f"{tf}: synthetic_by_year={report.synthetic_by_year}")
     return EXIT_DATA_ERROR if failed else EXIT_OK
 
 

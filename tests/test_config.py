@@ -223,3 +223,52 @@ def test_holdout_must_be_ordered(repo: Path) -> None:
     _edit_config(repo, backtest__holdout_end="2025-01-01")
     with pytest.raises(ConfigError, match="holdout"):
         _load(repo)
+
+
+def test_repo_config_no_trade_policy_settings() -> None:
+    from datetime import date
+
+    s = load_settings(REPO_ROOT / "config.yaml", REPO_ROOT / "no-such.env")
+    assert s.data.history_start == date(2017, 1, 1)
+    assert s.data.no_trade_policy == "fill_flat"
+    assert s.data.max_synthetic_ratio == Decimal("0.001")
+
+
+@pytest.mark.parametrize("policy", ["interpolate", "forward_fill", "", "FILL_FLAT"])
+def test_bad_no_trade_policy_is_refused(repo: Path, policy: str) -> None:
+    _edit_config(repo, data__no_trade_policy=policy)
+    with pytest.raises(ConfigError, match="no_trade_policy"):
+        _load(repo)
+
+
+@pytest.mark.parametrize("key", ["history_start", "no_trade_policy", "max_synthetic_ratio"])
+def test_no_trade_settings_are_required(repo: Path, key: str) -> None:
+    _edit_config(repo, **{f"data__{key}": None})
+    with pytest.raises(ConfigError, match=key):
+        _load(repo)
+
+
+@pytest.mark.parametrize("start", ["2025-11-11", "2026-01-01"])
+def test_history_start_on_or_after_holdout_is_refused(repo: Path, start: str) -> None:
+    _edit_config(repo, data__history_start=start)
+    with pytest.raises(ConfigError, match="history_start"):
+        _load(repo)
+
+
+@pytest.mark.parametrize("ratio", ["-0.1", "1", "1.5", "NaN", "Infinity"])
+def test_bad_max_synthetic_ratio_is_refused(repo: Path, ratio: str) -> None:
+    _edit_config(repo, data__max_synthetic_ratio=ratio)
+    with pytest.raises(ConfigError, match="max_synthetic_ratio"):
+        _load(repo)
+
+
+def test_zero_max_synthetic_ratio_is_accepted(repo: Path) -> None:
+    _edit_config(repo, data__max_synthetic_ratio="0")
+    assert _load(repo).data.max_synthetic_ratio == Decimal(0)
+
+
+def test_no_trade_settings_are_above_protected_block() -> None:
+    text = (REPO_ROOT / "config.yaml").read_text(encoding="utf-8")
+    protected = text.index("# PROTECTED")
+    for key in ("history_start:", "no_trade_policy:", "max_synthetic_ratio:"):
+        assert text.index(key) < protected

@@ -47,6 +47,9 @@ data:
   timeframes: [1d, 4h, 15m]         # downloaded by `bot data update`
   fetch_max_retries: 5              # retries per request on rate limit / network errors
   fetch_retry_base_seconds: 2       # backoff = base * 2**attempt
+  history_start: 2017-01-01         # provisional; re-measured in M1 story 6 (FR-03)
+  no_trade_policy: fill_flat        # fill_flat | fail: archive omits no-trade intervals
+  max_synthetic_ratio: "0.001"      # max synthetic rows / rows from history_start on
 
 paths:
   var_dir: var

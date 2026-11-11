@@ -1,6 +1,7 @@
 """Incremental cache update from the public API (FR-02, AD-18).
 
-Reads the cache, fetches only candles after its last ``open_at``, validates the combined
+Reads the cache, fetches only candles after its last ``open_at``, applies
+``data.no_trade_policy`` (the writer's job; the validator never fills), validates the combined
 frame and writes it atomically. Any error raises before the cache is touched.
 """
 
@@ -14,7 +15,7 @@ from bot.clock import Clock
 from bot.config import Settings
 from bot.data.cache import cache_path, interval_ms, normalize, write_cache
 from bot.data.fetch import FetchError, fetch_closed_candles
-from bot.data.validate import read_cache_checked, validate_frame
+from bot.data.validate import apply_no_trade_policy, read_cache_checked, validate_frame
 
 
 def update_timeframe(settings: Settings, exchange: Any, clock: Clock, tf: str) -> pd.DataFrame:
@@ -24,7 +25,7 @@ def update_timeframe(settings: Settings, exchange: Any, clock: Clock, tf: str) -
     cached = read_cache_checked(path)
     since: int | None = None
     if cached is not None:
-        validate_frame(cached, tf)  # never build on a defective (or empty) cache
+        validate_frame(cached, tf, settings.data)  # never build on a defective (or empty) cache
         since = int(cached["open_at"].astype("int64").iloc[-1]) + interval_ms(tf)
 
     fetched = fetch_closed_candles(
@@ -42,7 +43,7 @@ def update_timeframe(settings: Settings, exchange: Any, clock: Clock, tf: str) -
         return cached
 
     combined = fetched if cached is None else pd.concat([normalize(cached), fetched])
-    combined = combined.reset_index(drop=True)
-    validate_frame(combined, tf, now=clock.now())
+    combined = apply_no_trade_policy(combined, tf, settings.data.no_trade_policy)
+    validate_frame(combined, tf, settings.data, now=clock.now())
     write_cache(path, combined)
     return combined
