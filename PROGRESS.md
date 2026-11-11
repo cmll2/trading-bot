@@ -4,8 +4,8 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 
 ## Status
 
-- **Current phase:** M0 Scaffold built on branch `m0-scaffold`; awaiting independent audit and operator review (brief §8, §9).
-- **Blocked on:** operator review of M0 before M1 starts.
+- **Current phase:** M1 Data (branch `m1-data`).
+- **Blocked on:** nothing.
 
 ## Done
 
@@ -15,10 +15,11 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 
 - 2026-11-11 — **M0 Scaffold built** (branch `m0-scaffold`, not merged). Package skeleton per brief §5 with stubs citing AD-/FR- IDs; Broker/Clock/Strategy/MarketData ports; frozen pydantic `Settings` from `config.yaml` + `.env` (`.env` = secrets-file path only, refused inside the repo; unknown keys and a live-gate value in `.env` refused; secrets file never opened); protected `risk:` section → frozen `RiskLimits`; `bot backtest|dry-run|live` stubs, live double gate (`--live` + `TRADING_BOT_LIVE=I_ACCEPT_REAL_ORDERS`) and still refusing in M0; plumbing excluded from live; autouse network block in `tests/conftest.py`; ruff TID251 bans wall-clock APIs outside `bot/clock.py`. Check `uv run ruff check . && uv run ruff format --check . && uv run pytest` passed: 93 tests (also via `scripts/check.ps1` and `scripts/check.sh`). No dependency added. Known limits: everything beyond config/CLI gates is a stub; fees not in config (decide at M2); `.streamlit/config.toml` deferred to M4; independent audit not yet run.
 
+- 2026-11-11 — **M0 audited (PASS with findings, `docs/audits/M0-audit.md`) and approved by operator** ("do what you recommend"). Merged to main. Fixed findings F-2..F-7, F-10 (commit 2d49152), F-1 + F-11 in protected commit b415992, F-8/F-9 accepted (hunk review of config.yaml; LiveGate real protection at M6). 127 tests pass.
+
 ## Next
 
-1. Independent M0 audit (fresh reviewer runs the check, reads git history), then operator review of M0.
-2. After approval: merge `m0-scaffold`, start M1 Data.
+1. M1 Data: Kraken OHLCVT archive import + ccxt recent fill, Parquet cache, validation; several years of 1d and 4h BTC/EUR cached and validated. Then independent M1 audit and operator review.
 
 ## Decisions log
 
@@ -31,7 +32,7 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 | 2026-11-11 | **Daily candles** for v0 | Lowest fee drag; manual approval practical |
 | 2026-11-11 | **Post-only limit orders, re-priced within a window, then cancel & skip** (journal: "not filled") | Maker 0.40% vs taker 0.80% |
 | 2026-11-11 | **Manual approval per order** as default for first live weeks; engine supports both | User choice |
-| 2026-11-11 | **Risk limits:** max position 100% equity & €25 abs; 4 orders/day; daily loss 10%; total drawdown 25% from start (manual reset); stale: candle > 2 intervals, ticker > 120 s; price sanity 2% | User accepted defaults |
+| 2026-11-11 | **Risk limits:** max position 100% equity & €25 abs; ~~4 orders/day~~ (superseded below); daily loss 10%; total drawdown 25% from start (manual reset); stale: candle > 2 intervals, ticker > 120 s; price sanity 2% | User accepted defaults |
 | 2026-11-11 | **Dry-run host: this Windows PC** (keep code portable) | User choice |
 | 2026-11-11 | **GL-02 tolerance:** each paper fill within 0.5% of backtest-predicted price; 4-week equity within 2 pp | User accepted defaults |
 | 2026-11-11 | Key permissions checked via Kraken `GetApiKeyInfo`; refuse start if withdraw enabled or call fails | Research B3 |
@@ -55,6 +56,9 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 | 2026-11-11 | M0 built directly, not through the BMAD `bmad-build-auto` workflow (`_bmad/` runtime was absent at the time) | Coordinator decision; same scope, commits and checks |
 | 2026-11-11 | Live gate names per AD-15: `bot live --live` + `TRADING_BOT_LIVE=I_ACCEPT_REAL_ORDERS`, from the shell only (a value in `.env` is refused) | Keep the gate a deliberate per-session act |
 | 2026-11-11 | Fee rates are not in `config.yaml` at M0 (Conventions planned `fees.maker/taker` for backtest/dry-run). Decide at M2 whether to add them to config or read them from `fetch_trading_fee` | M0 instruction: no hardcoded minimums or fees |
+
+| 2026-11-11 | **Operator: "don't limit yourself to 4 orders a day, we go when we think there's a good call."** Trade-count caps raised to runaway-bug backstops: 20 intents/day, 120 exchange submissions/day; per-intent cap 12 moved into protected `risk:` (supersedes the AD-10 deviation above); integer limits strict. Protected commit b415992 | Operator's explicit request; caps kept only as protection against a looping bug |
+| 2026-11-11 | Operator approved all recommendations at M0 review: dashboard engage-only kill switch, risk checks built in M2 (backtest uses them), KrakenBroker in M6, any unhandled error or code fix during M5 restarts the 4-week clock | "do what you recommend" |
 
 ## Brief corrections (from research)
 

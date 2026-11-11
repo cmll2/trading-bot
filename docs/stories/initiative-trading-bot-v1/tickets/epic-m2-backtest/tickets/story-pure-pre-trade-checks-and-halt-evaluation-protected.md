@@ -26,9 +26,9 @@ Verify: tests/risk/ passes with one test per rule that triggers it and one that 
    **When** (position + resting buys + qty) × price exceeds min(100% × equity, €25)
    **Then** check_order rejects with rule max_position; a sell is never rejected by it
 2. **Orders per day** (FR-32, AD-11, PROGRESS)
-   **Given** 4 intents already created on the UTC day
-   **When** a first attempt of a fifth non-flatten intent is checked
-   **Then** it is rejected as max_orders_per_day; a submission beyond 24 on the day or 12 for the intent is rejected as max_submissions
+   **Given** `max_order_intents_per_day` intents (20) already created on the UTC day
+   **When** a first attempt of one more non-flatten intent is checked
+   **Then** it is rejected as max_orders_per_day; a submission beyond `max_exchange_submissions_per_day` (120) on the day or `max_submissions_per_intent` (12) for the intent is rejected as max_submissions
    **And** flatten intents are exempt from the intent count only
 3. **Halts** (FR-33, AD-11)
    **Given** equity ≤ 90% of day-open equity, or ≤ 75% of the active baseline

@@ -24,7 +24,7 @@ Verify: tests/risk/test_risk_limits.py passes: values equal the PROGRESS.md limi
 1. **Limits equal the adopted values** (SAF-04, FR-30, AD-11)
    **Given** config.yaml `risk:`
    **When** RiskLimits is loaded
-   **Then** max position 100% of equity and €25; 4 new order intents/day; 24 exchange submissions/day; max 12 submissions per intent; daily loss 10%; total drawdown 25% from start; stale candle 2 intervals; stale ticker 120 s; price sanity 2%; absolute kill-switch path
+   **Then** max position 100% of equity and €25; 20 new order intents/day; 120 exchange submissions/day; max 12 submissions per intent (raised by operator 2026-11-11, commit b415992); daily loss 10%; total drawdown 25% from start; stale candle 2 intervals; stale ticker 120 s; price sanity 2%; absolute kill-switch path
    **And** a missing or extra key fails loading
 2. **No write path** (SAF-05, AD-10)
    **Given** the loaded RiskLimits
