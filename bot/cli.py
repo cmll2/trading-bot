@@ -23,6 +23,7 @@ import argparse
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,7 @@ from bot.config import (
     DEFAULT_ENV_PATH,
     LIVE_GATE_ENV,
     LIVE_GATE_VALUE,
+    TIMEFRAME_SECONDS,
     ConfigError,
     Settings,
     load_settings,
@@ -43,7 +45,12 @@ from bot.data.cache import SOURCES, cache_path, data_hash
 from bot.data.fetch import FetchError, make_public_exchange, price_tick
 from bot.data.merge import OverlapStats
 from bot.data.update import update_timeframe_with_stats
-from bot.data.validate import DataValidationError, read_cache_checked, validate_frame
+from bot.data.validate import (
+    DataValidationError,
+    audit_gaps,
+    read_cache_checked,
+    validate_frame,
+)
 from bot.strategy.base import Mode
 from bot.strategy.registry import StrategyNotAllowed, strategy_class_for
 
@@ -120,21 +127,28 @@ def _parser() -> argparse.ArgumentParser:
         ("update", "download recent closed candles into the cache (public API)"),
         ("validate", "validate the cached candles; never repairs"),
         ("import-archive", "import candles from a Kraken OHLCVT ZIP archive (checksum first)"),
+        ("audit-gaps", "list no-trade (synthetic) runs in a date window; read-only"),
     ):
         p = data_sub.add_parser(name, help=help_, allow_abbrev=False)
         p.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
         p.add_argument("--env-file", type=Path, default=DEFAULT_ENV_PATH)
+        default_tf = "1d" if name == "audit-gaps" else "data.timeframes in config"
         p.add_argument(
             "--timeframe",
             action="append",
             choices=DATA_TIMEFRAMES,
             default=None,
-            help="timeframe to process; repeatable (default: data.timeframes in config)",
+            help=f"timeframe to process; repeatable (default: {default_tf})",
         )
         if name == "import-archive":
             p.add_argument("--zip", type=Path, required=True, help="Kraken OHLCVT ZIP archive")
             p.add_argument(
                 "--sha256", required=True, help="expected SHA-256 of the ZIP (64 hex characters)"
+            )
+        if name == "audit-gaps":
+            p.add_argument("--start", type=date.fromisoformat, default=date(2013, 1, 1))
+            p.add_argument(
+                "--end", type=date.fromisoformat, default=date(2016, 12, 31), help="inclusive"
             )
     return parser
 
@@ -167,6 +181,10 @@ def _data_command(args: argparse.Namespace) -> int:
     clock = _clock_factory()
     if args.data_command == "import-archive":
         return _import_archive_command(args, settings, timeframes, clock)
+    if args.data_command == "audit-gaps":
+        return _audit_gaps_command(
+            args, settings, list(dict.fromkeys(args.timeframe or ["1d"])), clock
+        )
     exchange = _exchange_factory() if args.data_command == "update" else None
     failed = False
     for tf in timeframes:
@@ -203,6 +221,56 @@ def _data_command(args: argparse.Namespace) -> int:
             _print_overlap(tf, stats)
         if args.data_command == "validate":
             print(f"{tf}: data_hash={data_hash(frame)}")
+    return EXIT_DATA_ERROR if failed else EXIT_OK
+
+
+def _audit_gaps_command(
+    args: argparse.Namespace, settings: Settings, timeframes: list[str], clock: Clock
+) -> int:
+    """Read-only gap audit (M1 story 6): validates each cache first, then lists runs."""
+    if args.start > args.end:
+        _err(f"REFUSED: --start {args.start} is after --end {args.end}")
+        return EXIT_REFUSED
+    start = pd.Timestamp(args.start, tz="UTC")
+    end = pd.Timestamp(args.end, tz="UTC") + pd.Timedelta(days=1)  # --end is inclusive
+    failed = False
+    for tf in timeframes:
+        path = cache_path(settings.paths.var_dir, settings.pairs[0], tf)
+        try:
+            frame = read_cache_checked(path)
+            if frame is None:
+                _err(f"DATA ERROR [{tf}]: no cache for {tf} ({path})")
+                failed = True
+                continue
+            validate_frame(frame, tf, settings.data, now=clock.now())
+        except DataValidationError as exc:
+            _data_error(tf, exc)
+            failed = True
+            continue
+        except OSError as exc:  # e.g. cache file locked on Windows
+            _err(f"DATA ERROR [{tf}]: {type(exc).__name__}: {exc}")
+            failed = True
+            continue
+        audit = audit_gaps(frame, tf, start, end)
+        window = f"{args.start}..{args.end}"
+        if audit.first is None or audit.last is None:
+            print(
+                f"{tf}: {window}: NOT AUDITABLE - no cached candles in this window "
+                f"(cache covers {frame['open_at'].iloc[0]} .. {frame['open_at'].iloc[-1]})"
+            )
+            continue
+        print(
+            f"{tf}: {window}: rows={audit.rows} first={audit.first} last={audit.last} "
+            f"synthetic_runs={len(audit.runs)} synthetic_rows={audit.synthetic_rows}"
+        )
+        step = pd.Timedelta(seconds=TIMEFRAME_SECONDS[tf])
+        if audit.first > start:
+            print(f"{tf}:   PARTIAL COVERAGE - not examined {start} .. {audit.first - step}")
+        if audit.last + step < end:
+            print(f"{tf}:   PARTIAL COVERAGE - not examined {audit.last + step} .. {end - step}")
+        for run_start, run_end, length in audit.runs:
+            clipped = " (crosses the window edge)" if run_start < start or run_end >= end else ""
+            print(f"{tf}:   no-trade run {run_start} .. {run_end} ({length} candles){clipped}")
     return EXIT_DATA_ERROR if failed else EXIT_OK
 
 

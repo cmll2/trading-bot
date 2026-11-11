@@ -341,3 +341,56 @@ def validate_frame(
         synthetic_ratio_after_start=float(ratio),
         synthetic_by_year={int(y): int(n) for y, n in years.items()},
     )
+
+
+@dataclass(frozen=True)
+class GapAudit:
+    """No-trade (synthetic) runs of a cache that overlap ``[start, end)`` (M1 story 6).
+
+    ``first``/``last`` give the cached coverage inside the window (None when the cache holds
+    no candle there, which means the window cannot be audited, not that it has no gaps).
+    Runs are reported with their full extent, even when they cross a window edge.
+    """
+
+    tf: str
+    start: pd.Timestamp
+    end: pd.Timestamp
+    rows: int
+    first: pd.Timestamp | None
+    last: pd.Timestamp | None
+    runs: tuple[tuple[pd.Timestamp, pd.Timestamp, int], ...]  # (first open_at, last, length)
+
+    @property
+    def synthetic_rows(self) -> int:
+        return sum(n for _, _, n in self.runs)
+
+
+def audit_gaps(df: pd.DataFrame, tf: str, start: pd.Timestamp, end: pd.Timestamp) -> GapAudit:
+    """List synthetic runs overlapping ``[start, end)``. Read-only; expects a validated frame."""
+    if start >= end:
+        raise ValueError(f"audit window start {start} is not before end {end}")
+    open_at = df["open_at"].reset_index(drop=True)
+    synthetic = _bool(df["source"] == "synthetic")
+    runs: list[tuple[pd.Timestamp, pd.Timestamp, int]] = []
+    i = 0
+    while i < len(df):
+        if not synthetic[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(df) and synthetic[j + 1]:
+            j += 1
+        if open_at.iloc[i] < end and open_at.iloc[j] >= start:
+            runs.append((open_at.iloc[i], open_at.iloc[j], j - i + 1))
+        i = j + 1
+    inside = open_at[(open_at >= start) & (open_at < end)]
+    empty = inside.empty
+    return GapAudit(
+        tf=tf,
+        start=start,
+        end=end,
+        rows=len(inside),
+        first=None if empty else inside.iloc[0],
+        last=None if empty else inside.iloc[-1],
+        runs=tuple(runs),
+    )
