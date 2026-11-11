@@ -391,12 +391,12 @@ None of these is stored as a mutable balance.
 - **Rule:**
   - **Window.** A signal on candle t opens an execution window `[t_close, t_close + execution.window]`. Config validation requires `window ≤ timeframe`.
   - **Pricing.** The engine places a post-only limit at the best bid (buy) or best ask (sell), rounded to `tick_size` in the passive direction.
-  - **Re-pricing.** Every `execution.reprice_interval`, if the order is unfilled or partly filled, the engine:
+  - **Re-pricing.** Every `execution.reprice_interval_minutes` (30 min), if the order is unfilled or partly filled, the engine:
     1. requests a cancel and waits until it is confirmed and all of the order's fills are ingested (AD-27);
     2. recomputes the quantity (AD-13);
     3. places a new order at the current best price with a new `cl_ord_id`.
 
-    It re-prices at most `execution.max_reprices` times.
+    An intent makes at most `execution.max_submissions_per_intent` (12) exchange submissions, the first order included. Independently, the protected `risk.max_exchange_submissions_per_day` (24) caps all submissions per UTC day. Config validation requires the per-intent cap ≤ the daily cap. *(M0 deviation from the original AD-10, which put a `max_reprices` value in `risk:`; agreed 2026-11-11, see PROGRESS.md.)*
   - **Rejections.** `PostOnlyWouldCross` triggers an immediate re-price, which counts toward the maximum. Any other `OrderRejected` ends the intent (AD-28) with a risk event of kind `exchange_reject`.
   - **Window end** follows AD-28, including the buy completion phase.
   - v1 code has no market orders. The backtest also reports a taker variant (fill at the t+1 open, with the taker fee) for CON-06.
@@ -505,7 +505,7 @@ stateDiagram-v2
     - `kill_switch_engaged(path) -> bool`: reads only.
   - `ProposedOrder` carries `intent_id`, `attempt_no`, `is_flatten`, `side`, `qty`, `limit_price` and `cl_ord_id`.
   - `RiskContext` is assembled by the engine from the store helpers. It contains: equity now, day-open equity, active baseline, intents created today, last closed candle time and its synthetic flag, ticker time, `reference_price`, current mid, signed position plus resting quantity, active halts, and the kill switch state.
-  - **Loading:** limits are loaded once at startup from the `risk:` section of `config.yaml`, opened read-only. That section also holds the absolute kill-switch path and `max_reprices`. Limits are hashed into `runs.limits_hash`, printed in the live banner and written to `risk_snapshots`, and are never reloaded.
+  - **Loading:** limits are loaded once at startup from the `risk:` section of `config.yaml`, opened read-only. That section also holds the kill-switch path (resolved to an absolute path at load) and the daily cap `max_exchange_submissions_per_day`. The per-intent cap `max_submissions_per_intent` lives in `execution:`, not `risk:` (M0 deviation, see AD-5 and PROGRESS.md). Limits are hashed into `runs.limits_hash`, printed in the live banner and written to `risk_snapshots`, and are never reloaded.
   - **No write path:** an AST test fails if any module opens the config path for write or append, or calls `write_text` or a yaml dump on it.
   - **Every submission is checked,** re-prices and flattens included. The adapter enforces the `RiskDecision` (§1).
   - `risk/` and `tests/risk/` stay small and separate, so that protected commits (SAF-04) touch nothing else.
@@ -787,7 +787,7 @@ stateDiagram-v2
 | completing → done | `completion_end_at` passed, still unsellable | `dust` (+ `dust` risk event, logged as an error) |
 | any active → halted | kill switch or halt (non-flatten) | `halted` |
 
-  **Completion phase:** the intent keeps re-pricing post-only toward the sellable threshold only, until `completion_end_at = window_end_at + execution.completion_window` (default 24 h). It goes through every risk check, does not count toward orders/day, and its re-prices are capped by `max_reprices`.
+  **Completion phase:** the intent keeps re-pricing post-only toward the sellable threshold only, until `completion_end_at = window_end_at + execution.completion_window` (default 24 h). It goes through every risk check, does not count toward orders/day, and its submissions are capped by `execution.max_submissions_per_intent` and by the daily `risk.max_exchange_submissions_per_day`.
 
 ### AD-29: Operational envelope
 
@@ -936,7 +936,7 @@ Q-1 (which pair) is resolved: BTC/EUR, per `docs/research/pair-selection.md`.
 | Q-5 | Live banner: print only, or also require typing a confirmation? A typed confirmation blocks unattended restarts. | Print and log only | M6 |
 | Q-6 | After a drawdown halt, does the reset rebase the baseline? | Only with an explicit `--rebase-baseline`, which is logged | M3 |
 | Q-7 | Windows process supervision (Task Scheduler restart?) and power settings for the 4-week dry-run | Manual start; restarts are safe | M3 (48 h test) |
-| Q-8 | Does "4 orders/day" count decisions (intents) or exchange submissions? With re-pricing, submissions could reach 4 × (1 + `max_reprices`). Are the execution values right: `window` 4 h, `reprice_interval` 15 min, `max_reprices` 8, `sim_timeframe` 15m, `sim_half_spread_bps` 1, `slippage_bps` 5, `unknown_grace` 60 s, `completion_window` 24 h? | Counts intents; values as listed; `max_reprices` sits in the protected `risk:` section | M2 |
+| Q-8 | **Resolved 2026-11-11 (PROGRESS.md).** "4 orders/day" = 4 new order intents/day, plus a protected hard cap of 24 exchange submissions/day (re-prices count). Execution values: `window_hours` 6, `reprice_interval_minutes` 30, `max_submissions_per_intent` 12 (in `execution:`, not `risk:`). Still to confirm at M2: `sim_timeframe` 15m, `sim_half_spread_bps` 1, `slippage_bps` 5, `unknown_grace` 60 s, `completion_window` 24 h. | As stated | M2 |
 | Q-9 | Does the account hold BTC outside the bot? AD-9 assumes it does not (A-1). | The bot owns the whole BTC balance; EUR may exceed the bot's allocation | M6 |
 | Q-10 | Should dry-run use a query-only key to read the real fee tier and test the permission check early? | No key in dry-run | M5 |
 | Q-11 | Disposal total: gross proceeds, or net of fees? | Gross, with fees in their own column | M4 |

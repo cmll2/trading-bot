@@ -49,6 +49,11 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 | 2026-11-11 | Risk limits stay in `config.yaml` under `risk:` (protected); loaded read-only | Brief §5.5 says config.yaml |
 | 2026-11-11 | Halt reset does NOT rebase drawdown baseline unless `--rebase` is passed explicitly (with confirmation) | Conservative default |
 | 2026-11-11 | Windows supervision: Task Scheduler (at logon + restart on failure), documented at M3 | Host = this PC |
+| 2026-11-11 | **Deviation from AD-10:** the per-intent cap (`max_submissions_per_intent: 12`) lives in `execution:`, not in protected `risk:`. The daily hard cap of 24 exchange submissions stays in `risk:`. Config validation requires per-intent cap ≤ daily cap. architecture.md AD-5/AD-10/AD-28 patched | `risk:` holds exactly the limits the operator adopted; the daily cap is the protective one |
+| 2026-11-11 | Execution values from this log (6 h window, 30 min re-price interval, 12 submissions/intent) supersede architecture Q-8 defaults (4 h / 15 min / 8 re-prices); Q-8 patched | This log is authoritative |
+| 2026-11-11 | M0 built directly, not through the BMAD `bmad-build-auto` workflow (`_bmad/` runtime was absent at the time) | Coordinator decision; same scope, commits and checks |
+| 2026-11-11 | Live gate names per AD-15: `bot live --live` + `TRADING_BOT_LIVE=I_ACCEPT_REAL_ORDERS`, from the shell only (a value in `.env` is refused) | Keep the gate a deliberate per-session act |
+| 2026-11-11 | Fee rates are not in `config.yaml` at M0 (Conventions planned `fees.maker/taker` for backtest/dry-run). Decide at M2 whether to add them to config or read them from `fetch_trading_fee` | M0 instruction: no hardcoded minimums or fees |
 
 ## Brief corrections (from research)
 
