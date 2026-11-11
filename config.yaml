@@ -42,6 +42,12 @@ review:
   gl02_max_fill_price_diff_fraction: "0.005"   # each paper fill within 0.5% of backtest price
   gl02_max_equity_diff_pp: "2"                 # 4-week equity within 2 percentage points
 
+# Market data (AD-18): candles cached in var/data/BTC-EUR/{timeframe}.parquet.
+data:
+  timeframes: [1d, 4h, 15m]         # downloaded by `bot data update`
+  fetch_max_retries: 5              # retries per request on rate limit / network errors
+  fetch_retry_base_seconds: 2       # backoff = base * 2**attempt
+
 paths:
   var_dir: var
 

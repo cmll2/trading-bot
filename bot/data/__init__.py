@@ -1,6 +1,10 @@
 """Market data: candle download, local Parquet cache, validation (FR-01 to FR-04, AD-18). M1.
 
-Planned modules: archive (Kraken OHLCVT archive import), fetch (ccxt recent candles),
-validate (fail loudly, never repair), cache (var/data/BTC-EUR/{timeframe}.parquet),
-market (MarketData port).
+Modules:
+- cache: schema, path and atomic read/write of var/data/BTC-EUR/{timeframe}.parquet
+- fetch: recent closed candles from Kraken's public OHLC endpoint (ccxt, unauthenticated)
+- update: incremental cache update (``bot data update``)
+- validate: fail loudly, never repair (``bot data validate``)
+- market: MarketData port
+Planned: archive (Kraken OHLCVT archive import, story 3).
 """

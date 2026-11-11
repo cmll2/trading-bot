@@ -89,6 +89,26 @@ class ReviewSettings(_Frozen):
     gl02_max_equity_diff_pp: Decimal = Field(gt=0)
 
 
+DataTimeframe = Literal["15m", "4h", "1d"]
+
+
+class DataSettings(_Frozen):
+    """Market-data download settings (AD-18, FR-01 to FR-04)."""
+
+    timeframes: tuple[DataTimeframe, ...]
+    fetch_max_retries: int = Field(ge=0, strict=True)
+    fetch_retry_base_seconds: float = Field(gt=0, le=300, allow_inf_nan=False)
+
+    @field_validator("timeframes")
+    @classmethod
+    def _non_empty_unique(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        if not v:
+            raise ValueError("data.timeframes must not be empty")
+        if len(set(v)) != len(v):
+            raise ValueError("data.timeframes must not repeat a timeframe")
+        return v
+
+
 class PathSettings(_Frozen):
     var_dir: Path
 
@@ -106,6 +126,7 @@ class Settings(_Frozen):
     slippage_bps: Decimal = Field(ge=0)
     backtest: BacktestSettings
     review: ReviewSettings
+    data: DataSettings
     paths: PathSettings
     risk: RiskLimits
     secrets_file: Path | None = None  # path only; the file is never read here

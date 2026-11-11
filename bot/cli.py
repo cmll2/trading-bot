@@ -3,6 +3,10 @@
 Subcommands in M0: ``backtest``, ``dry-run``, ``live``. All are stubs that validate the
 configuration and the strategy/mode combination, then exit with "not implemented".
 
+M1 adds ``bot data update`` and ``bot data validate`` (AD-18): public, unauthenticated
+candle download into the local Parquet cache, and its validation. Data errors exit with
+``EXIT_DATA_ERROR``.
+
 ``live`` requires BOTH the ``--live`` flag AND ``TRADING_BOT_LIVE=I_ACCEPT_REAL_ORDERS`` in
 the process environment (never from .env), plus a strategy allowed in live. Only
 ``open_live_gate`` can create a ``LiveGate``; KrakenBroker (M6) will require one. In M0,
@@ -14,9 +18,13 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
+import pandas as pd
+
+from bot.clock import Clock, SystemClock
 from bot.config import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_ENV_PATH,
@@ -26,12 +34,23 @@ from bot.config import (
     Settings,
     load_settings,
 )
+from bot.data.cache import cache_path
+from bot.data.fetch import FetchError, make_public_exchange
+from bot.data.update import update_timeframe
+from bot.data.validate import DataValidationError, read_cache_checked, validate_frame
 from bot.strategy.base import Mode
 from bot.strategy.registry import StrategyNotAllowed, strategy_class_for
 
 EXIT_OK = 0
 EXIT_REFUSED = 2
 EXIT_NOT_IMPLEMENTED = 3
+EXIT_DATA_ERROR = 4
+
+DATA_TIMEFRAMES = ("15m", "4h", "1d")
+
+# Injectable adapters for ``bot data``; tests monkeypatch these module-level factories.
+_exchange_factory: Callable[[], Any] = make_public_exchange
+_clock_factory: Callable[[], Clock] = SystemClock
 
 LIVE_TIMEFRAMES = frozenset({"4h", "1d"})  # CON-08
 
@@ -88,6 +107,23 @@ def _parser() -> argparse.ArgumentParser:
         p.add_argument("--strategy", default=None, help="strategy id (default: config)")
         if name == "live":
             p.add_argument("--live", action="store_true", help="required to run live")
+
+    data = sub.add_parser("data", help="market data cache (AD-18)", allow_abbrev=False)
+    data_sub = data.add_subparsers(dest="data_command", required=True)
+    for name, help_ in (
+        ("update", "download recent closed candles into the cache (public API)"),
+        ("validate", "validate the cached candles; never repairs"),
+    ):
+        p = data_sub.add_parser(name, help=help_, allow_abbrev=False)
+        p.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+        p.add_argument("--env-file", type=Path, default=DEFAULT_ENV_PATH)
+        p.add_argument(
+            "--timeframe",
+            action="append",
+            choices=DATA_TIMEFRAMES,
+            default=None,
+            help="timeframe to process; repeatable (default: data.timeframes in config)",
+        )
     return parser
 
 
@@ -95,9 +131,55 @@ def _err(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
+def _data_error(tf: str, exc: FetchError | DataValidationError) -> None:
+    # Schema-level defects (wrong columns, naive open_at) have no single timestamp.
+    where = "" if exc.open_at is None or pd.isna(exc.open_at) else f" at {exc.open_at}"
+    _err(f"DATA ERROR [{tf}]: {exc.defect}{where}")
+
+
+def _data_command(args: argparse.Namespace) -> int:
+    try:
+        settings = load_settings(args.config, args.env_file)
+    except ConfigError as exc:
+        _err(f"REFUSED: invalid configuration: {exc}")
+        return EXIT_REFUSED
+    timeframes = list(dict.fromkeys(args.timeframe or settings.data.timeframes))
+    clock = _clock_factory()
+    exchange = _exchange_factory() if args.data_command == "update" else None
+    failed = False
+    for tf in timeframes:
+        try:
+            if args.data_command == "update":
+                frame = update_timeframe(settings, exchange, clock, tf)
+                report = validate_frame(frame, tf)
+            else:
+                path = cache_path(settings.paths.var_dir, settings.pairs[0], tf)
+                frame = read_cache_checked(path)
+                if frame is None:
+                    _err(f"DATA ERROR [{tf}]: no cache for {tf} ({path})")
+                    failed = True
+                    continue
+                report = validate_frame(frame, tf, now=clock.now())
+        except (FetchError, DataValidationError) as exc:
+            _data_error(tf, exc)
+            failed = True
+            continue
+        except OSError as exc:  # e.g. cache file locked on Windows
+            _err(f"DATA ERROR [{tf}]: {type(exc).__name__}: {exc}")
+            failed = True
+            continue
+        print(
+            f"{tf}: rows={report.rows} first={report.first} last={report.last} "
+            f"sources={report.sources}"
+        )
+    return EXIT_DATA_ERROR if failed else EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     args = _parser().parse_args(argv)
     env = dict(os.environ) if env is None else env
+    if args.command == "data":
+        return _data_command(args)
     mode: Mode = args.command
 
     if mode == "live":
