@@ -4,8 +4,9 @@ Subcommands in M0: ``backtest``, ``dry-run``, ``live``. All are stubs that valid
 configuration and the strategy/mode combination, then exit with "not implemented".
 
 M1 adds ``bot data update`` and ``bot data validate`` (AD-18): public, unauthenticated
-candle download into the local Parquet cache, and its validation. Data errors exit with
-``EXIT_DATA_ERROR``.
+candle download into the local Parquet cache, and its validation. M1 story 3 adds
+``bot data import-archive --zip PATH --sha256 HEX`` (Kraken OHLCVT archive, checksum first).
+Data errors exit with ``EXIT_DATA_ERROR``.
 
 ``live`` requires BOTH the ``--live`` flag AND ``TRADING_BOT_LIVE=I_ACCEPT_REAL_ORDERS`` in
 the process environment (never from .env), plus a strategy allowed in live. Only
@@ -34,6 +35,7 @@ from bot.config import (
     Settings,
     load_settings,
 )
+from bot.data.archive import ArchiveError, import_archive
 from bot.data.cache import cache_path
 from bot.data.fetch import FetchError, make_public_exchange
 from bot.data.update import update_timeframe
@@ -113,6 +115,7 @@ def _parser() -> argparse.ArgumentParser:
     for name, help_ in (
         ("update", "download recent closed candles into the cache (public API)"),
         ("validate", "validate the cached candles; never repairs"),
+        ("import-archive", "import candles from a Kraken OHLCVT ZIP archive (checksum first)"),
     ):
         p = data_sub.add_parser(name, help=help_, allow_abbrev=False)
         p.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -124,6 +127,11 @@ def _parser() -> argparse.ArgumentParser:
             default=None,
             help="timeframe to process; repeatable (default: data.timeframes in config)",
         )
+        if name == "import-archive":
+            p.add_argument("--zip", type=Path, required=True, help="Kraken OHLCVT ZIP archive")
+            p.add_argument(
+                "--sha256", required=True, help="expected SHA-256 of the ZIP (64 hex characters)"
+            )
     return parser
 
 
@@ -145,6 +153,8 @@ def _data_command(args: argparse.Namespace) -> int:
         return EXIT_REFUSED
     timeframes = list(dict.fromkeys(args.timeframe or settings.data.timeframes))
     clock = _clock_factory()
+    if args.data_command == "import-archive":
+        return _import_archive_command(args, settings, timeframes, clock)
     exchange = _exchange_factory() if args.data_command == "update" else None
     failed = False
     for tf in timeframes:
@@ -177,6 +187,27 @@ def _data_command(args: argparse.Namespace) -> int:
         if report.synthetic_by_year:
             print(f"{tf}: synthetic_by_year={report.synthetic_by_year}")
     return EXIT_DATA_ERROR if failed else EXIT_OK
+
+
+def _import_archive_command(
+    args: argparse.Namespace, settings: Settings, timeframes: list[str], clock: Clock
+) -> int:
+    def _written(tf: str, frame: pd.DataFrame) -> None:
+        synthetic = int((frame["source"] == "synthetic").sum())
+        print(
+            f"{tf}: rows={len(frame)} first={frame['open_at'].iloc[0]} "
+            f"last={frame['open_at'].iloc[-1]} source=archive synthetic={synthetic}"
+        )
+
+    try:
+        import_archive(
+            settings, args.zip, args.sha256, timeframes, now=clock.now(), on_written=_written
+        )
+    except ArchiveError as exc:
+        where = f" [{exc.timeframe}]" if exc.timeframe else ""
+        _err(f"DATA ERROR{where}: {exc}")
+        return EXIT_DATA_ERROR
+    return EXIT_OK
 
 
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:

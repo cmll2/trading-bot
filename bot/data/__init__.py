@@ -5,6 +5,6 @@ Modules:
 - fetch: recent closed candles from Kraken's public OHLC endpoint (ccxt, unauthenticated)
 - update: incremental cache update (``bot data update``)
 - validate: fail loudly, never repair (``bot data validate``)
+- archive: Kraken OHLCVT ZIP archive import, checksum first (``bot data import-archive``)
 - market: MarketData port
-Planned: archive (Kraken OHLCVT archive import, story 3).
 """
