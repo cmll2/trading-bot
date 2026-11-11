@@ -72,14 +72,17 @@ def open_live_gate(
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="bot", description="Kraken spot trading bot")
+    # allow_abbrev=False: the live gate must require the exact ``--live`` flag (audit M0 F-6).
+    parser = argparse.ArgumentParser(
+        prog="bot", description="Kraken spot trading bot", allow_abbrev=False
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     for name, help_ in (
         ("backtest", "run a backtest (M2)"),
         ("dry-run", "run the engine with the paper broker (M3)"),
         ("live", "run the engine with real orders (M6; refuses in M0)"),
     ):
-        p = sub.add_parser(name, help=help_)
+        p = sub.add_parser(name, help=help_, allow_abbrev=False)
         p.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
         p.add_argument("--env-file", type=Path, default=DEFAULT_ENV_PATH)
         p.add_argument("--strategy", default=None, help="strategy id (default: config)")

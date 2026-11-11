@@ -36,7 +36,10 @@ def no_broker(monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(*_a: object, **_k: object) -> None:
         raise AssertionError("load_secrets must never be called in M0")
 
+    # Patch the definition AND any name imported into cli, so a future
+    # ``from bot.config import load_secrets`` in cli.py is caught too (audit M0 F-7).
     monkeypatch.setattr("bot.config.load_secrets", _boom)
+    monkeypatch.setattr("bot.cli.load_secrets", _boom, raising=False)
 
 
 # --- live double gate -----------------------------------------------------------------
@@ -148,3 +151,10 @@ def test_invalid_config_is_refused(tmp_path: Path, no_broker) -> None:
 def test_live_subcommand_rejects_unknown_flags(base_args) -> None:
     with pytest.raises(SystemExit):
         cli.main(["live", *base_args, "--i-dont-know"], env=GATE_ON)
+
+
+@pytest.mark.parametrize("abbrev", ["--liv", "--li", "--l"])
+def test_live_flag_abbreviations_do_not_open_the_gate(base_args, abbrev) -> None:
+    # Audit M0 F-6: only the exact --live flag counts.
+    with pytest.raises(SystemExit):
+        cli.main(["live", *base_args, abbrev], env=GATE_ON)

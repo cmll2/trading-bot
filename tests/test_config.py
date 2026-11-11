@@ -5,6 +5,7 @@ All .env and secrets files here are dummy tmp_path files. No real secrets file i
 
 from __future__ import annotations
 
+import os
 import shutil
 from decimal import Decimal
 from pathlib import Path
@@ -168,7 +169,6 @@ def test_env_file_values_are_not_injected_into_os_environ(
 ) -> None:
     monkeypatch.delenv("TRADING_BOT_SECRETS_FILE", raising=False)
     _load(repo, f"TRADING_BOT_SECRETS_FILE={tmp_path / 'x.env'}\n")
-    import os
 
     assert "TRADING_BOT_SECRETS_FILE" not in os.environ
 
@@ -204,7 +204,10 @@ def test_window_longer_than_timeframe_is_refused(repo: Path) -> None:
 
 
 def test_per_intent_cap_above_daily_cap_is_refused(repo: Path) -> None:
-    _edit_config(repo, execution__max_submissions_per_intent=25)
+    daily = yaml.safe_load((repo / "config.yaml").read_text(encoding="utf-8"))["risk"][
+        "max_exchange_submissions_per_day"
+    ]
+    _edit_config(repo, execution__max_submissions_per_intent=daily + 1)
     with pytest.raises(ConfigError, match="max_submissions_per_intent"):
         _load(repo)
 

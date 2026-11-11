@@ -13,8 +13,9 @@ build/
 .env.*
 !.env.example
 *.key
-*secret*
-!**/test_*secret*.py
+*.pem
+# No '*secret*' pattern: it would silently hide source files such as
+# bot/secrets.py (audit M0 F-5). Real secrets live outside the repo (bot/config.py).
 
 # Runtime state, data, logs
 /data/
@@ -24,6 +25,8 @@ build/
 *.sqlite3
 *.db
 *.parquet
+# Recorded test fixtures are tracked (brief §8 consistency test, audit M0 F-5).
+!tests/fixtures/**
 KILL_SWITCH
 
 # Local tooling
