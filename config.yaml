@@ -52,8 +52,11 @@ paths:
 risk:
   max_position_fraction: "1.00"          # 100% of equity
   max_position_abs_quote: "25"           # and at most EUR 25
-  max_order_intents_per_day: 4           # new order intents per UTC day
-  max_exchange_submissions_per_day: 24   # exchange submissions per UTC day, re-prices included
+  # Operator request 2026-11-11: no strategy-limiting cap on trade count; these are
+  # runaway-bug backstops only (a daily strategy produces at most one intent per day).
+  max_order_intents_per_day: 20          # new order intents per UTC day
+  max_exchange_submissions_per_day: 120  # exchange submissions per UTC day, re-prices included
+  max_submissions_per_intent: 12         # submissions (first + re-prices) per order intent
   max_daily_loss_fraction: "0.10"        # halt, manual reset
   max_total_drawdown_fraction: "0.25"    # from the start baseline; halt, manual reset
   stale_candle_intervals: 2

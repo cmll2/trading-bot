@@ -13,12 +13,14 @@ from bot.risk.limits import RiskLimits
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Values adopted in PROGRESS.md (decisions log, 2026-11-11).
+# Values adopted in PROGRESS.md (decisions log, 2026-11-11; trade-count caps raised to
+# runaway-bug backstops on the operator's explicit request the same day).
 EXPECTED = {
     "max_position_fraction": Decimal("1.00"),
     "max_position_abs_quote": Decimal("25"),
-    "max_order_intents_per_day": 4,
-    "max_exchange_submissions_per_day": 24,
+    "max_order_intents_per_day": 20,
+    "max_exchange_submissions_per_day": 120,
+    "max_submissions_per_intent": 12,
     "max_daily_loss_fraction": Decimal("0.10"),
     "max_total_drawdown_fraction": Decimal("0.25"),
     "stale_candle_intervals": 2,
@@ -77,6 +79,7 @@ def test_missing_risk_key_is_refused() -> None:
         ("max_position_abs_quote", "-1"),
         ("max_order_intents_per_day", 0),
         ("max_exchange_submissions_per_day", -3),
+        ("max_submissions_per_intent", 0),
         ("max_daily_loss_fraction", "1"),
         ("max_total_drawdown_fraction", "0"),
         ("stale_candle_intervals", 0),
@@ -87,4 +90,29 @@ def test_missing_risk_key_is_refused() -> None:
 def test_out_of_range_risk_values_are_refused(key: str, bad: object) -> None:
     section = _repo_risk_section() | {key: bad}
     with pytest.raises(ValidationError):
+        RiskLimits.model_validate(section)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "max_order_intents_per_day",
+        "max_exchange_submissions_per_day",
+        "max_submissions_per_intent",
+        "stale_candle_intervals",
+        "stale_ticker_seconds",
+    ],
+)
+@pytest.mark.parametrize("bad", [True, 4.0, "4"])
+def test_integer_limits_are_strict(key: str, bad: object) -> None:
+    # Audit M0 F-11: a YAML typo such as `true` or `4.0` must not become a valid limit.
+    section = _repo_risk_section() | {key: bad}
+    with pytest.raises(ValidationError):
+        RiskLimits.model_validate(section)
+
+
+def test_per_intent_cap_cannot_exceed_daily_cap() -> None:
+    section = _repo_risk_section()
+    section["max_submissions_per_intent"] = section["max_exchange_submissions_per_day"] + 1
+    with pytest.raises(ValidationError, match="max_submissions_per_intent"):
         RiskLimits.model_validate(section)
