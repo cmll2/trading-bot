@@ -1,0 +1,56 @@
+# Epics in build order; one per milestone M0-M6 (brief §9, §14).
+[[epic]]
+id = 1
+slug = "epic-m0-scaffold"
+title = "M0 Scaffold: an empty, safe, pinned skeleton whose tests and lint pass"
+description = "The operator can run one command on an empty skeleton and see tests and lint pass (brief §9 M0 done-when)."
+covers = ["R43", "R64", "R65", "R66", "R67", "R69", "R73", "R76"]
+
+[[epic]]
+id = 2
+slug = "epic-m1-data"
+title = "M1 Data: several years of validated BTC/EUR candles cached locally"
+description = "The operator can see several years of daily, 4h and 15m BTC/EUR candles cached as Parquet and passing validation (brief §9 M1)."
+covers = ["R1", "R2", "R3", "R4", "R65", "R66", "R68"]
+after = [{ epic = 1, needs = "M0 accepted by the operator after its independent audit (brief §9: one milestone at a time)" }]
+
+[[epic]]
+id = 3
+slug = "epic-m2-backtest"
+title = "M2 Backtester and v0 strategy: one command produces an honest backtest report"
+description = "The operator runs one command and gets a backtest report with metrics and benchmarks at maker and taker rates, and the look-ahead guard test passes (brief §9 M2)."
+covers = ["R5", "R6", "R7", "R8", "R11", "R12", "R13", "R14", "R15", "R16", "R17", "R18", "R19", "R20", "R21", "R22", "R23", "R24", "R30", "R31", "R32", "R33", "R34", "R35", "R57", "R58", "R61", "R65", "R66", "R68", "R74", "R75"]
+after = [{ epic = 2, needs = "M1 accepted by the operator after its independent audit (brief §9: one milestone at a time)" }]
+
+[[epic]]
+id = 4
+slug = "epic-m3-paper-engine-risk"
+title = "M3 Paper broker, engine, risk manager: dry-run runs 48 hours unattended and survives a forced restart"
+description = "The operator sees the engine run in dry-run for 48 hours without intervention and resume cleanly after a forced restart (brief §9 M3)."
+covers = ["R9", "R10", "R11", "R24", "R25", "R26", "R27", "R29", "R33", "R36", "R37", "R38", "R39", "R40", "R44", "R59", "R60", "R61", "R62", "R63", "R65", "R66", "R70", "R71", "R72"]
+after = [{ epic = 3, needs = "M2 accepted by the operator after its independent audit (brief §9: one milestone at a time)" }]
+
+[[epic]]
+id = 5
+slug = "epic-m4-dashboard"
+title = "M4 Dashboard: seven read-only views work against the dry-run database"
+description = "The operator can open 127.0.0.1 and use all seven views against the dry-run database (brief §9 M4)."
+covers = ["R40", "R41", "R42", "R46", "R47", "R48", "R49", "R50", "R51", "R52", "R53", "R54", "R55", "R56", "R62", "R65", "R66", "R72", "R75"]
+after = [{ epic = 4, needs = "M3 accepted by the operator after its independent audit (brief §9: one milestone at a time)" }]
+
+[[epic]]
+id = 6
+slug = "epic-m5-dry-run"
+title = "M5 Dry-run period: four weeks of reviewed dry-run produce the go-live evidence"
+description = "The operator holds four weekly reviews and a closing report that state GL-01 and GL-02 PASS or FAIL with evidence (brief §9 M5, §10)."
+covers = ["R41", "R42", "R65", "R66", "R70", "R77", "R78", "R79", "R80"]
+after = [{ epic = 5, needs = "M4 accepted by the operator after its independent audit (brief §9: one milestone at a time)" }]
+
+[[epic]]
+id = 7
+slug = "epic-m6-live"
+title = "M6 Live with €20: the bot trades real money only after every go-live criterion is met"
+description = "The operator decides go-live on fixed criteria and, if yes, the bot runs live on €20 with manual approval (brief §10)."
+covers = ["R23", "R26", "R27", "R28", "R45", "R63", "R65", "R66", "R73", "R77", "R78", "R81", "R82"]
+after = [{ epic = 6, needs = "M5 accepted by the operator after its independent audit (brief §9: one milestone at a time)" }]
+

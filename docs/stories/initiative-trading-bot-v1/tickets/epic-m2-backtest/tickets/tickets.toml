@@ -1,0 +1,157 @@
+# M2 stories in build order.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Broker port, domain types, error taxonomy and FakeBroker"
+description = "bot/broker/base.py and errors.py define the Broker protocol, frozen Decimal/UTC domain types and the six-error taxonomy; tests/fakes provide a scriptable FakeBroker."
+verify = "Unit tests: FakeBroker satisfies the protocol, scripts partial fill, timeout-after-accept, reject, rate limit and exchange-side cancel, and place_order raises without an approved matching RiskDecision."
+covers = ["R17"]
+after = ["epic-m1-data"]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, §1 Broker port", "architecture — docs/planning/architecture.md, AD-10"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Pure pre-trade checks and halt evaluation (protected)"
+description = "bot/risk/checks.py and halts.py implement check_order and evaluate_halts exactly per AD-11, with tests/risk/ triggering every rule."
+verify = "tests/risk/ passes with one test per rule that triggers it and one that passes it, including the 24 submissions/day cap and flatten exemptions."
+covers = ["R19", "R20", "R21", "R22", "R23", "R24", "R27"]
+after = ["epic-m1-data"]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-10", "architecture — docs/planning/architecture.md, AD-11", "architecture — docs/planning/architecture.md, AD-12", "decisions — PROGRESS.md, orders/day interpretation"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "SQLite store schema v1 with derived position, cash and equity"
+description = "store.py and migrations/0001_init.sql create the §2 schema with pragmas, write-once schema_meta, idempotency keys and derived-quantity helpers; works on a file or :memory:."
+verify = "Unit tests: migrations apply and version-check; duplicate signal, cl_ord_id, trade id, active halt and day-open inserts are refused; derived cash/position/equity match a hand-computed fill sequence."
+covers = ["R12", "R28"]
+after = ["epic-m1-data"]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, §2 State store", "architecture — docs/planning/architecture.md, AD-7", "architecture — docs/planning/architecture.md, AD-17", "architecture — docs/planning/architecture.md, AD-26"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Walking-skeleton backtest from one command"
+description = "Tracer: `bot backtest --strategy v0_trend` runs Engine(PaperBroker, SimClock, ReplayMarketData, :memory: store) over cached 1d candles with the v0 MA filter and writes a results file with total return versus buy-and-hold and cash."
+verify = "On a synthetic series with a known trend the command produces the expected trades and return; on the real cache it writes results/*.json labelled SIMULATED."
+covers = ["R1", "R2", "R3", "R4", "R5", "R18"]
+after = [1, 2, 3]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-1", "architecture — docs/planning/architecture.md, AD-3", "architecture — docs/planning/architecture.md, AD-6", "architecture — docs/planning/architecture.md, AD-10"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Look-ahead guard by prefix invariance"
+description = "backtest/lookahead.py reruns the whole pipeline at N seeded cutpoints with the future replaced by a random walk and raises LookAheadError on any differing past target."
+verify = "tests/test_lookahead.py: a strategy reading t+1 through a module-level reference raises LookAheadError and no report is written; v0 passes."
+covers = ["R16"]
+after = [4]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-4"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Post-only execution window with re-pricing and cancel-and-skip"
+description = "The engine executes each intent per AD-5 and AD-28: post-only limit at best bid/ask, re-price every 30 min within a 6 h window, max 12 submissions per intent, completion phase, cancel and skip; PaperBroker fills through fill_model on closed 15m candles."
+verify = "FakeClock tests on synthetic 15m candles: fill on strict trade-through, re-price after 30 min, skip with outcome not_filled at window end, completion phase for an unsellable partial buy."
+covers = ["R6", "R18", "R29"]
+after = [4]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-5", "architecture — docs/planning/architecture.md, AD-6", "architecture — docs/planning/architecture.md, AD-7", "architecture — docs/planning/architecture.md, AD-27", "architecture — docs/planning/architecture.md, AD-28"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Sizing, exchange minimums and dust handling"
+description = "sizing.py computes order quantity per AD-13 at every submission, enforces amount/cost minimums and tick/step from MarketRules, and rejects (never rounds) sub-minimum orders with outcome below_minimum."
+verify = "Unit tests: €20 equity buy sized by min(target×equity, caps, free/(1+fee)); a target under the sellable threshold yields below_minimum and a logged rejection; sell sizes the full base."
+covers = ["R7", "R25"]
+after = [4]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-13", "Conventions: Numbers, Fees"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Metrics report at maker and taker rates with verdict line"
+description = "backtest/metrics.py and the report writer produce every FR-14 metric for strategy and benchmarks at both fee variants, the bootstrap Sharpe CI, and the provenance record."
+verify = "Synthetic known-outcome series reproduce hand-computed metrics; the report's first line states whether the strategy beat buy-and-hold after costs; results JSON holds commit, dirty flag, config hash, data range and hash."
+covers = ["R8", "R12", "R13", "R15", "R26", "R28", "R30"]
+after = [6]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-21"]
+
+[[entry]]
+id = 9
+type = "story"
+title = "Walk-forward, holdout registry and change limit"
+description = "Walk-forward and parameter search refuse the fixed holdout range, record configurations tried, and the holdout run is once per strategy, recorded in results/holdout_runs.jsonl; `--change N` enforces ≤ 5 logged changes."
+verify = "Tests: a search touching 2025-11-11 is refused; a second holdout run without `--rerun-holdout --reason` is refused; a dirty tree is refused; `--change 6` is refused; configs-tried count is in the results file."
+covers = ["R9", "R10", "R11", "R14"]
+after = [8]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-21"]
+
+[[entry]]
+id = 10
+type = "story"
+title = "Refactor sweep"
+description = "Cleanup-only pass over the M2 code, scoped at its start from the plans and review findings the epic deferred."
+verify = "The single check command passes and the diff contains no new behaviour (reviewer confirms against the sweep scope list in the plan)."
+covers = []
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+hitl = false
+risk = "low"
+refine = true
+
+[[entry]]
+id = 11
+type = "story"
+title = "Known-outcome synthetic backtest suite"
+description = "Closing end-to-end suite: synthetic price series with hand-derived outcomes run through `bot backtest` and assert trades, fees, metrics and rejections."
+verify = "`pytest tests/backtest/test_known_outcomes.py` passes and covers rising, falling, flat, gap and sub-minimum series."
+covers = ["R26", "R25"]
+after = [10]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-1", "architecture — docs/planning/architecture.md, AD-6", "architecture — docs/planning/architecture.md, AD-13"]
+
+[[entry]]
+id = 12
+type = "story"
+title = "Independent M2 audit report"
+description = "A reviewer who wrote none of the M2 code audits the milestone per brief §8 and the operator reads the report before the M2 review."
+verify = "docs/audits/M2-audit.md exists, rates every M2 criterion PASS/FAIL/INCONCLUSIVE with evidence, and PROGRESS.md points to it."
+covers = ["R31", "R32"]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-21", "architecture — docs/planning/architecture.md, AD-24"]
+

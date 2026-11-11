@@ -1,0 +1,183 @@
+# M3 stories in build order.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Dry-run engine ticking on live prices with heartbeats and journal"
+description = "Tracer: `bot dry-run --strategy v0_trend` runs Engine(PaperBroker, SystemClock, CcxtMarketData, var/state/dry-run-v0_trend.sqlite) with the engine lock, run record, per-tick heartbeat and a journaled signal on each daily close; `bot status` prints state."
+verify = "FakeClock/fake-ccxt test drives one daily close to a journaled signal and a paper order; the builder runs `bot dry-run` for 10 minutes and `bot status` shows a fresh heartbeat (labelled simulated)."
+covers = ["R3", "R4", "R5", "R12"]
+after = ["epic-m2-backtest"]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-1", "architecture — docs/planning/architecture.md, AD-2", "architecture — docs/planning/architecture.md, AD-17", "architecture — docs/planning/architecture.md, AD-26", "architecture — docs/planning/architecture.md, AD-28"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Crash-safe restart mid-order with no duplicates"
+description = "Startup sequence of AD-8: created→not_found, submitting→unknown, find_order resolution with grace, idempotent fill ingestion, pending signal resume, intent continuation; persist-before-act everywhere."
+verify = "FakeBroker/FakeClock tests restart in every open-like order state, after a timeout-after-accept, with created and pending rows, and assert no duplicate placement and Σfills = filled_qty."
+covers = ["R6", "R7", "R13", "R16"]
+after = [1]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-7", "architecture — docs/planning/architecture.md, AD-8", "architecture — docs/planning/architecture.md, AD-27", "architecture — docs/planning/architecture.md, AD-28"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Reconciliation at startup and hourly halts on mismatch"
+description = "The engine compares open orders, base balance, quote balance and fills between store and broker (paper tables in dry-run) at startup and hourly, and halts on any mismatch."
+verify = "FakeBroker tests: an unknown open order, a base balance off by one step, or an unmatched fill each write risk_events, insert a reconcile_mismatch halt, cancel own orders and exit non-zero."
+covers = ["R8", "R11"]
+after = [2]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-9", "architecture — docs/planning/architecture.md, AD-29"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Kill-switch file module (protected)"
+description = "bot/risk/kill_switch.py: engage(path, source) writes `source=… at=…`, kill_switch_engaged(path) reads; tests/risk/ cover hand-made, CLI and dashboard-source files."
+verify = "tests/risk/test_kill_switch.py passes: engage creates the file with one line, an empty hand-made file counts as engaged with source=file, and the module offers no delete."
+covers = ["R10", "R19"]
+after = ["epic-m2-backtest"]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-12", "architecture — docs/planning/architecture.md, AD-17"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Kill switch and halts stop trading: cancel orders, keep position"
+description = "Each tick snapshots the kill switch and evaluates halts before any submission; when engaged or halted the engine blocks intents, cancels resting non-flatten orders, moves the active intent to halted and keeps the position; `bot kill on/off --note` via operator_actions."
+verify = "FakeBroker tests for file, CLI and each halt rule: resting order cancelled in the same tick, final fills ingested, outcome halted, position unchanged, risk_events written; `bot kill off` deletes the file only through the engine."
+covers = ["R9", "R10", "R11", "R18", "R19"]
+after = [2, 4]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-11", "architecture — docs/planning/architecture.md, AD-12", "architecture — docs/planning/architecture.md, AD-17", "research — docs/planning/ux-dashboard/EXPERIENCE.md — Control boundary"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Manual halt reset and flatten from the CLI"
+description = "`bot reset-halt <rule> --note [--rebase-baseline]` and `bot flatten --note` write operator_actions; the engine consumes them at startup and each tick per AD-12 and AD-25."
+verify = "Tests: a daily_loss halt stays until reset; reset without --rebase keeps the baseline; with it appends an equity_baselines row; flatten while halted sells the full base through every applicable risk check."
+covers = ["R9", "R11"]
+after = [5]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-12", "architecture — docs/planning/architecture.md, AD-17", "architecture — docs/planning/architecture.md, AD-25", "architecture — docs/planning/architecture.md, AD-26"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Manual and autonomous approval modes"
+description = "`execution.approval` manual or autonomous; in manual an intent waits in awaiting_approval until `bot approve <id>` or `bot reject <id> --note`, and expires at window end."
+verify = "FakeClock tests: approve moves to working, reject and deadline both give skipped_by_operator; re-prices inside ±2% need no re-approval but still pass risk."
+covers = ["R15", "R14"]
+after = [2]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-16", "architecture — docs/planning/architecture.md, AD-28"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Complete journal outcomes, snapshots, health records and backups"
+description = "Every signal ends with one AD-28 outcome; each tick writes equity and risk snapshots and day-open equity; api_calls, errors (redacted) and heartbeats feed health; a daily store backup keeps 30 copies."
+verify = "Engine tests produce each outcome value at least once; a tick writes equity_snapshots, risk_snapshots and one day-open row per UTC day; errors rows pass redaction; backup file appears in var/backups/."
+covers = ["R12", "R13", "R14", "R22"]
+after = [2]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-11", "architecture — docs/planning/architecture.md, AD-22", "architecture — docs/planning/architecture.md, AD-28", "architecture — docs/planning/architecture.md, §2 Backups"]
+
+[[entry]]
+id = 9
+type = "story"
+title = "Backtest and paper broker agree on recorded data"
+description = "Dry-run records the bid/ask it priced from; a consistency test replays the same recorded 15m candles and bid/ask through the backtest path and the paper path and asserts identical trades."
+verify = "`pytest tests/test_consistency.py` passes on a recorded fixture of at least 10 intents including a re-price and a not_filled."
+covers = ["R17", "R4"]
+after = [1]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-6"]
+
+[[entry]]
+id = 10
+type = "story"
+title = "Plumbing strategy on its own store, never live"
+description = "strategy/plumbing.py trades a short timeframe in dry-run only on var/state/dry-run-plumbing.sqlite to exercise orders, restarts and the dashboard; the registry refuses it outside backtest and dry-run."
+verify = "Tests: plumbing builds for dry-run, is absent from LIVE_STRATEGIES, and a live build request is refused; a 1-hour dry-run produces several simulated orders tagged plumbing."
+covers = ["R1", "R2", "R20"]
+after = [1]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-15", "architecture — docs/planning/architecture.md, AD-30"]
+
+[[entry]]
+id = 11
+type = "story"
+title = "Windows operation: supervision, graceful stop and sleep handling"
+description = "Documented Task Scheduler setup (at logon, restart on failure), CTRL+C/CTRL_BREAK graceful stop that finishes the tick and releases the lock, fatal-exit cancel, and post-sleep behaviour."
+verify = "Test: a stop signal mid-tick commits and releases the lock; docs/operations/windows-supervision.md exists; the builder demonstrates a stop and restart."
+covers = ["R21", "R23"]
+after = [3]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-29", "decisions — PROGRESS.md, Windows supervision decision"]
+
+[[entry]]
+id = 12
+type = "story"
+title = "Refactor sweep"
+description = "Cleanup-only pass over the M3 code, scoped at its start from the plans and review findings the epic deferred."
+verify = "The single check command passes and the diff contains no new behaviour (reviewer confirms against the sweep scope list in the plan)."
+covers = []
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+hitl = false
+risk = "low"
+refine = true
+
+[[entry]]
+id = 13
+type = "story"
+title = "48-hour unattended dry-run with a forced restart"
+description = "Closing check: v0 and plumbing dry-runs run 48 h on this PC without intervention, including one forced process kill and restart; results recorded."
+verify = "PROGRESS.md records start/end UTC, heartbeat gaps, errors count 0, reconciliation mismatches 0, and the forced-restart time with no duplicate orders."
+covers = ["R21", "R13", "R8"]
+after = [12]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-8", "architecture — docs/planning/architecture.md, AD-9", "architecture — docs/planning/architecture.md, AD-29"]
+
+[[entry]]
+id = 14
+type = "story"
+title = "Independent M3 audit report"
+description = "A reviewer who wrote none of the M3 code audits the milestone per brief §8 and the operator reads the report before the M3 review."
+verify = "docs/audits/M3-audit.md exists, rates every M3 criterion PASS/FAIL/INCONCLUSIVE with evidence, and PROGRESS.md points to it."
+covers = ["R24", "R25"]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-21", "architecture — docs/planning/architecture.md, AD-24"]
+

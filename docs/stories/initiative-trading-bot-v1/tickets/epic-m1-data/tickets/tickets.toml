@@ -1,0 +1,105 @@
+# M1 stories in build order.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Recent daily candles downloaded, cached and validated end to end"
+description = "Tracer: `bot data update` pulls recent BTC/EUR 1d candles via ccxt with pagination and rate-limit handling into var/data/BTC-EUR/1d.parquet, and `bot data validate` checks them."
+verify = "With a fake ccxt in tests the cache file is written with the schema; run once for real by the builder, `bot data validate` exits 0 and prints the range."
+covers = ["R1", "R2"]
+after = ["epic-m0-scaffold"]
+hitl = false
+risk = "low"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-18", "architecture — docs/planning/architecture.md, AD-24", "architecture — docs/planning/architecture.md, Consistency conventions: Time, Pairs"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Validation fails loudly and never repairs"
+description = "data/validate.py checks uniqueness, monotonic and interval-aligned UTC timestamps and OHLC consistency, classifies missing intervals, and applies the no-trade policy."
+verify = "Fixture tests: each defect type makes `bot data validate` exit non-zero naming the defect; a no-trade gap inside the archive range is filled flat with source=synthetic under `fill_flat`, and fails under `fail`."
+covers = ["R3"]
+after = [1]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-18"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Kraken OHLCVT archive import with checksum"
+description = "`bot data import-archive --zip <path>` verifies the published SHA256 and streams only XBTEUR_1440/240/15 CSVs into the cache with source=archive."
+verify = "A test zip with a wrong checksum is refused; a correct fixture zip imports three timeframes; the operator runs it once on the real archive."
+covers = ["R1", "R2"]
+after = [2]
+hitl = true
+risk = "low"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-18", "research — docs/research/build-vs-reuse-and-kraken.md — B6"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Archive and API merged with an overlap check"
+description = "Where archive and API ranges overlap, candles must agree within tolerance before the merged cache is written."
+verify = "Fixture test: overlapping candles that differ by 2 ticks fail the merge; within 1 tick and 1% volume they merge, keeping per-row source."
+covers = ["R1", "R3"]
+after = [3]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-18"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Clock port and closed-candle history view"
+description = "clock.py (SystemClock, SimClock, FakeClock) and an immutable CandleHistory that exposes only candles with open_at + interval ≤ clock.now(), plus MarketData port with a Replay adapter."
+verify = "Unit tests with FakeClock: a candle becomes visible exactly at its close; mutating the view raises; ReplayMarketData serves the cache."
+covers = ["R4", "R5"]
+after = [1]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-2", "architecture — docs/planning/architecture.md, AD-3", "architecture — docs/planning/architecture.md, AD-21"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Several years of 1d, 4h and 15m BTC/EUR history cached and validated"
+description = "The operator-supplied archive plus `bot data update` produce validated caches for all three timeframes; history depth and early gaps are reported."
+verify = "`bot data validate` exits 0 for 1d, 4h and 15m; PROGRESS.md records first/last candle, synthetic ratio and the 2013–2016 gap audit."
+covers = ["R1", "R2", "R3"]
+after = [3, 4, 5]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-18", "architecture — docs/planning/architecture.md, AD-21", "research — docs/research/pair-selection.md"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Refactor sweep"
+description = "Cleanup-only pass over the M1 code, scoped at its start from the plans and review findings the epic deferred."
+verify = "The single check command passes and the diff contains no new behaviour (reviewer confirms against the sweep scope list in the plan)."
+covers = []
+after = [1, 2, 3, 4, 5, 6]
+hitl = false
+risk = "low"
+refine = true
+
+[[entry]]
+id = 8
+type = "story"
+title = "Independent M1 audit report"
+description = "A reviewer who wrote none of the M1 code audits the milestone per brief §8 and the operator reads the report before the M1 review."
+verify = "docs/audits/M1-audit.md exists, rates every M1 criterion PASS/FAIL/INCONCLUSIVE with evidence, and PROGRESS.md points to it."
+covers = ["R6", "R7"]
+after = [1, 2, 3, 4, 5, 6, 7]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-21", "architecture — docs/planning/architecture.md, AD-24"]
+

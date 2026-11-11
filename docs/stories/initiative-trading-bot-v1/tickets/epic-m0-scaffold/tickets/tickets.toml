@@ -1,0 +1,93 @@
+# M0 stories in build order.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Skeleton package, pinned lockfile and one check command"
+description = "Tracer: the package layout of brief §5 with empty modules, a `uv.lock` pinning only brief §6 dependencies, and one command that runs tests, lint and format check."
+verify = "On a clean clone, `uv sync --locked` and the check command both exit 0, and `uv run bot --help` prints the CLI usage."
+covers = ["R1"]
+after = []
+hitl = false
+risk = "low"
+refine = true
+references = ["architecture — docs/planning/architecture.md, Structural seed, Stack"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Test harness that blocks the network and refuses silent skips"
+description = "tests/conftest.py makes every network call raise and a meta-test fails on any skip or xfail without a referenced operator decision."
+verify = "`pytest` passes; a scratch test that opens a socket fails with NetworkBlocked, and a scratch `@pytest.mark.skip` without a decision reference fails the suite."
+covers = ["R2"]
+after = [1]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-24"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Typed settings loaded once from config.yaml and .env"
+description = "config.py loads every non-risk section of config.yaml plus `.env` into one frozen pydantic Settings, with paths made absolute."
+verify = "Unit tests load a fixture config into Settings, reject an unknown key, a second pair and a relative-path escape, and Settings attributes cannot be reassigned."
+covers = ["R6"]
+after = [1]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, Consistency conventions: Config, Paths"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Protected risk-limit section and frozen RiskLimits model"
+description = "The `risk:` section of config.yaml and bot/risk/limits.py with tests/risk/test_risk_limits.py: limits load read-only into a frozen model and are hashed."
+verify = "tests/risk/test_risk_limits.py passes: values equal the PROGRESS.md limits, the model is frozen, the file is opened read-only and the limits hash is stable."
+covers = ["R6"]
+after = [3]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-10", "architecture — docs/planning/architecture.md, AD-11", "decisions — PROGRESS.md, Decisions log 2026-11-11 (risk limits, orders/day interpretation, execution window)"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Secrets path guard and log redaction"
+description = "`.env.example` with empty values, a secrets loader that refuses paths inside the repo, and a root logging filter writing JSON lines with secrets redacted."
+verify = "A test plants fake secrets in a temp file outside the repo, logs and raises through a wrapper, and asserts neither value appears in the log file or the exception text."
+covers = ["R3", "R4"]
+after = [3]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-22", "architecture — docs/planning/architecture.md, Consistency conventions: Logging"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Architecture guards: import graph, clock ban, no config writes"
+description = "tests/test_architecture.py and ruff banned-api enforce the dependency rule, the clock rule and the no-write-to-config rule."
+verify = "The suite passes on the skeleton, and three scratch violations (strategy importing ccxt, `datetime.now()` outside clock.py, `open(config_path, 'w')`) each make the check command fail."
+covers = ["R5", "R6"]
+after = [1]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-2", "architecture — docs/planning/architecture.md, AD-3", "architecture — docs/planning/architecture.md, AD-10", "architecture — docs/planning/architecture.md, Design paradigm, Dependency rule"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Independent M0 audit report"
+description = "A reviewer who wrote none of the M0 code audits the milestone per brief §8 and the operator reads the report before the M0 review."
+verify = "docs/audits/M0-audit.md exists, rates every M0 criterion PASS/FAIL/INCONCLUSIVE with evidence, and PROGRESS.md points to it."
+covers = ["R7", "R8"]
+after = [1, 2, 3, 4, 5, 6]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-21", "architecture — docs/planning/architecture.md, AD-24"]
+

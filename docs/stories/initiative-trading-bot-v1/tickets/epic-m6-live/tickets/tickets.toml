@@ -1,0 +1,106 @@
+# M6 stories in build order.
+
+[[entry]]
+id = 1
+type = "story"
+title = "KrakenBroker adapter tested against a fake ccxt"
+description = "bot/broker/kraken.py implements the Broker port on ccxt.kraken with clientOrderId, postOnly and oflags=fciq, find_order over open and closed orders, fee rates from fetch_trading_fee, and error mapping to the taxonomy."
+verify = "Unit tests with an injected fake ccxt check outgoing order params, find_order lookups, post-only crossing in both forms, minimum/tick errors and fail-closed fees; no network."
+covers = ["R1", "R2", "R3"]
+after = ["epic-m5-dry-run"]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, §1 KrakenBroker", "architecture — docs/planning/architecture.md, AD-8", "architecture — docs/planning/architecture.md, AD-13", "architecture — docs/planning/architecture.md, AD-15", "architecture — docs/planning/architecture.md, AD-27"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Live double gate, key-permission check and banner"
+description = "cli.open_live_gate requires the --live flag, TRADING_BOT_LIVE=I_ACCEPT_REAL_ORDERS, a live-allowed strategy and timeframe, explicit approval mode, live fees equal to config, and a passing GetApiKeyInfo check; then prints the banner."
+verify = "Tests (fake ccxt, temp secrets file outside repo) cover each refusal with exit code 2 and its named condition, withdraw permission refusal, call failure refusal, and the banner content."
+covers = ["R4", "R5", "R6", "R11"]
+after = [1]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-14", "architecture — docs/planning/architecture.md, AD-15", "architecture — docs/planning/architecture.md, AD-22"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Operator reads the broker, risk and engine code"
+description = "The operator reads bot/broker/, bot/risk/ and bot/engine.py in full, guided by a reading map, and records questions and sign-off."
+verify = "PROGRESS.md records date, commit hash read, files and line counts, questions raised and their answers, and the operator's sign-off line (GL-05)."
+covers = ["R7"]
+after = [1, 2]
+hitl = true
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, Capability map (GL-05, NFR-01)"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Go-live checklist with IP-restriction reminder"
+description = "One checklist in docs/operations/go-live-checklist.md walks GL-01 to GL-06, the key setup (query and trade only, no withdrawal), the SAF-03 IP restriction, €20 allocation, manual approval, and the open architecture questions."
+verify = "The checklist is complete with each line ticked or answered by the operator and the go/no-go decision recorded in PROGRESS.md."
+covers = ["R9", "R10", "R7", "R8"]
+after = [3]
+hitl = true
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-14", "architecture — docs/planning/architecture.md, AD-26", "decisions — PROGRESS.md, approval mode"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "First live start on €20 with manual approval"
+description = "The operator starts `bot live --live` with the env var; the banner, permission output and reconciliation are checked; the first intent is approved or rejected by hand."
+verify = "PROGRESS.md records the run id, banner snapshot (no secrets), IP allowlist line, reconciliation result and the first intent's outcome."
+covers = ["R5", "R4"]
+after = [4]
+hitl = true
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-15", "architecture — docs/planning/architecture.md, AD-16", "architecture — docs/planning/architecture.md, AD-26"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Record Kraken's real post-only crossing response"
+description = "With the operator present, one minimum-size post-only order priced to cross is placed to record Kraken's actual response, saved as a test fixture, and the adapter mapping is confirmed."
+verify = "tests/fixtures/kraken_post_only_cross.json exists (scrubbed of ids/keys) and the KrakenBroker test using it maps to PostOnlyWouldCross."
+covers = ["R3"]
+after = [5]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, §1 KrakenBroker (post-only crossing)"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "First live weeks monitoring cadence"
+description = "Weekly during the first live weeks: `bot review`, dashboard check, ledger export check, approval log review, in docs/reviews/live-week-N.md; switch to autonomous only on the operator's recorded decision."
+verify = "At least the first live-week note exists with errors, mismatches, approvals, fills vs expected and disposal total."
+covers = ["R8"]
+after = [5]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-16", "architecture — docs/planning/architecture.md, AD-19", "architecture — docs/planning/architecture.md, AD-20"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Independent M6 audit report"
+description = "A reviewer who wrote none of the M6 code audits the milestone per brief §8 and the operator reads the report before the M6 review."
+verify = "docs/audits/M6-audit.md exists, rates every M6 criterion PASS/FAIL/INCONCLUSIVE with evidence, and PROGRESS.md points to it."
+covers = ["R12", "R13"]
+after = [1, 2, 3, 4, 5, 6, 7]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-21", "architecture — docs/planning/architecture.md, AD-24"]
+

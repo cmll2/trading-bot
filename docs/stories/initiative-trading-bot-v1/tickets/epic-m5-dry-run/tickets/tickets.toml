@@ -1,0 +1,106 @@
+# M5 stories in build order.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Start the four-week dry-run on frozen code"
+description = "The operator starts v0 and plumbing dry-runs under Task Scheduler on a tagged commit, with config and limits hashes, review backtest ref and start date recorded."
+verify = "PROGRESS.md records the start UTC, commit, config_hash, limits_hash, review.backtest_run_ref and the incident rule; `bot status` shows both engines running."
+covers = ["R1", "R2"]
+after = ["epic-m4-dashboard"]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-21", "architecture — docs/planning/architecture.md, AD-29", "decisions — PROGRESS.md, dry-run host, GL-02 tolerance"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Week 1 dry-run review"
+description = "The operator runs `bot review` for week 1, reads Dry-run vs backtest, Health and Risk pages, and writes docs/reviews/week-1.md."
+verify = "docs/reviews/week-1.md states errors count, reconciliation mismatches, GL-02 interim verdicts, DECAYING status and any incident."
+covers = ["R6", "R7", "R2", "R3"]
+after = [1]
+hitl = true
+risk = "low"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-20"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Week 2 dry-run review"
+description = "Same review for week 2."
+verify = "docs/reviews/week-2.md exists with the same facts."
+covers = ["R6", "R7", "R2", "R3"]
+after = [2]
+hitl = true
+risk = "low"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-20"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Week 3 dry-run review"
+description = "Same review for week 3."
+verify = "docs/reviews/week-3.md exists with the same facts."
+covers = ["R6", "R7", "R2", "R3"]
+after = [3]
+hitl = true
+risk = "low"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-20"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Week 4 dry-run review"
+description = "Same review for week 4, closing the 28-day window."
+verify = "docs/reviews/week-4.md exists with the same facts and the window marked complete (28/28 days)."
+covers = ["R6", "R7", "R2", "R3"]
+after = [4]
+hitl = true
+risk = "low"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-20"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Risk-limit and kill-switch evidence matrix"
+description = "One table mapping every AD-11 rule to the test that triggers it and the dry-run or plumbing event that showed it working, plus kill-switch engage from file and from the dashboard observed in dry-run."
+verify = "docs/reviews/gl03-gl04-evidence.md lists every rule with a passing test id and an observed risk_events row (or an operator-witnessed scripted run), and two kill_on events with source=file and source=dashboard."
+covers = ["R4", "R5"]
+after = [1]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-11", "architecture — docs/planning/architecture.md, AD-12", "architecture — docs/planning/architecture.md, AD-24"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "M5 closing report and go-live evidence"
+description = "docs/reviews/M5-report.md states GL-01 and GL-02 PASS/FAIL over the window, DECAYING status, incidents and the evidence matrix, as input to the M6 decision."
+verify = "The report exists with a PASS/FAIL line for GL-01 to GL-04, each citing evidence files and store queries."
+covers = ["R2", "R3", "R4", "R5", "R1"]
+after = [5, 6]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-20"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Independent M5 audit report"
+description = "A reviewer who wrote none of the M5 code audits the milestone per brief §8 and the operator reads the report before the M5 review."
+verify = "docs/audits/M5-audit.md exists, rates every M5 criterion PASS/FAIL/INCONCLUSIVE with evidence, and PROGRESS.md points to it."
+covers = ["R8", "R9"]
+after = [1, 2, 3, 4, 5, 6, 7]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-21", "architecture — docs/planning/architecture.md, AD-24"]
+

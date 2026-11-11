@@ -1,0 +1,183 @@
+# M4 stories in build order.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Dashboard shell on 127.0.0.1 with mode banner and status strip"
+description = "Tracer: `bot dashboard` starts Streamlit bound to 127.0.0.1, opens the store with mode=ro, shows the mode banner from the latest run, the status strip and a minimal Overview (equity, cash, last heartbeat)."
+verify = "Test asserts .streamlit/config.toml and the CLI flags set server.address=127.0.0.1, headless and no usage stats; the builder opens it against the M3 store and sees the DRY-RUN banner."
+covers = ["R7", "R16", "R17"]
+after = ["epic-m3-paper-engine-risk"]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-17", "architecture — docs/planning/architecture.md, AD-23", "design — docs/planning/ux-dashboard/EXPERIENCE.md, DESIGN.md"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Risk page with kill-switch engage"
+description = "Risk view: each limit with usage from risk_snapshots, rejection/halt/kill history, kill-switch state, and an Engage button with confirmation that calls risk.kill_switch.engage."
+verify = "Test: clicking Engage then confirming creates the kill file with source=dashboard and the engine (FakeBroker) halts on next tick; no disengage control exists; usage values come from risk_snapshots."
+covers = ["R11", "R15"]
+after = [1]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-12", "architecture — docs/planning/architecture.md, AD-17", "design — docs/planning/ux-dashboard/EXPERIENCE.md Risk, Kill switch button"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Overview page with equity curve against buy-and-hold and cash"
+description = "Overview per FR-50: mode, engine status and heartbeat, equity, cash, open position, return since start, total fees, equity curve vs buy-and-hold and cash, pending approvals read-only."
+verify = "Against a fixture store the figures equal derived quantities from store.py helpers and the chart has three series with distinct line styles."
+covers = ["R8"]
+after = [1]
+hitl = false
+risk = "low"
+refine = true
+references = ["design — docs/planning/ux-dashboard/EXPERIENCE.md Overview"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Signals and trades page with journal"
+description = "Price chart with the strategy indicator, entry and exit markers and current target, plus the signal journal with outcomes and would-have-returned values."
+verify = "Against a fixture store with each outcome value, the journal lists each with its reason; markers match fills."
+covers = ["R9", "R1"]
+after = [1]
+hitl = false
+risk = "low"
+refine = true
+references = ["design — docs/planning/ux-dashboard/EXPERIENCE.md Signals & trades"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Orders and fills page"
+description = "Orders table with status, fills with price, fee and slippage versus the signal price, filterable by date."
+verify = "Fixture store: filtering a date range shows only its rows; slippage_bps matches fill vs reference price."
+covers = ["R10"]
+after = [1]
+hitl = false
+risk = "low"
+refine = true
+references = ["design — docs/planning/ux-dashboard/EXPERIENCE.md Orders & fills"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Weekly review job with GL-02 metrics and DECAYING flag"
+description = "`bot review` re-runs the backtest over the dry-run period from a hashed cache snapshot and writes backtest_predictions, signal_counterfactuals and weekly_reviews with its own lock."
+verify = "Fixture test: per-fill max difference vs 0.5%, equity difference vs 2 pp, flags insufficient_trades (<20), decaying, no_edge_baseline computed as specified; runs while the engine runs."
+covers = ["R1", "R2", "R3"]
+after = [1]
+hitl = false
+risk = "high"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-17", "architecture — docs/planning/architecture.md, AD-20"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Dry-run versus backtest page with GL-02 verdict"
+description = "View 5: two-line GL-02 verdict, per-trade diff table with MISSING rows failing, equity overlay with ±2 pp band, weekly reviews and DECAYING status."
+verify = "Fixture with one 0.71% fill and one missing trade shows `Per fill: FAIL` with the worst value and failures first; zero fills show `Not evaluable`, never PASS."
+covers = ["R12", "R2", "R3"]
+after = [6]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-20", "design — docs/planning/ux-dashboard/EXPERIENCE.md GL-02 verdict block"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Health page"
+description = "Recent errors, API latency, rate-limit events, data freshness against the stale thresholds, uptime."
+verify = "Fixture store: a ticker older than 120 s shows stale; errors list shows redacted messages; uptime from runs."
+covers = ["R13"]
+after = [1]
+hitl = false
+risk = "low"
+refine = true
+references = ["design — docs/planning/ux-dashboard/EXPERIENCE.md Health"]
+
+[[entry]]
+id = 9
+type = "story"
+title = "Ledger CSV export by Europe/Paris tax year"
+description = "ledger.py and `bot ledger export --year Y` write the ledger view as CSV with UTC and Paris times, disposal flag, simulated column and mode in the filename."
+verify = "Fixture fills around 31 Dec 23:30 UTC land in the right Paris year; a stablecoin-quoted fixture is not marked a disposal; dry-run file is named …_dry-run_SIMULATED.csv."
+covers = ["R4", "R5", "R6"]
+after = ["epic-m3-paper-engine-risk"]
+hitl = false
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-19"]
+
+[[entry]]
+id = 10
+type = "story"
+title = "Ledger page with disposal running total"
+description = "View 7: fills ledger with running crypto→EUR disposal total for the selected Europe/Paris year, account-wide, and a CSV download using the export function."
+verify = "Fixture store: header total equals the export's total; dry-run title reads `Ledger — SIMULATED (paper fills, not for tax)`."
+covers = ["R14", "R5"]
+after = [9]
+hitl = false
+risk = "low"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-19", "design — docs/planning/ux-dashboard/EXPERIENCE.md Ledger"]
+
+[[entry]]
+id = 11
+type = "story"
+title = "Store-state handling and auto-refresh"
+description = "Unreadable, locked and stale-engine states per the UX State Patterns, 30 s fragment refresh with pause and refresh-now, paused while the confirm dialog is open."
+verify = "Tests: a locked DB keeps prior data with `refresh failed`, three failures switch to unreadable; a stale heartbeat shows HEARTBEAT STALE."
+covers = ["R7"]
+after = [1]
+hitl = false
+risk = "low"
+refine = true
+references = ["design — docs/planning/ux-dashboard/EXPERIENCE.md State Patterns, Interaction Primitives"]
+
+[[entry]]
+id = 12
+type = "story"
+title = "Refactor sweep"
+description = "Cleanup-only pass over the M4 code, scoped at its start from the plans and review findings the epic deferred."
+verify = "The single check command passes and the diff contains no new behaviour (reviewer confirms against the sweep scope list in the plan)."
+covers = []
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+hitl = false
+risk = "low"
+refine = true
+
+[[entry]]
+id = 13
+type = "story"
+title = "All seven views verified against the dry-run database"
+description = "Closing check: the operator opens every view against the live M3 dry-run store (v0 and plumbing) and confirms each FR-50–FR-56 element."
+verify = "A checklist in docs/audits/M4-views-checklist.md has one line per FR-50–FR-56 element marked seen by the operator with date."
+covers = ["R7", "R8", "R9", "R10", "R11", "R12", "R13", "R14"]
+after = [12]
+hitl = true
+risk = "low"
+refine = true
+references = ["design — docs/planning/ux-dashboard/EXPERIENCE.md Key Flows F1, F2"]
+
+[[entry]]
+id = 14
+type = "story"
+title = "Independent M4 audit report"
+description = "A reviewer who wrote none of the M4 code audits the milestone per brief §8 and the operator reads the report before the M4 review."
+verify = "docs/audits/M4-audit.md exists, rates every M4 criterion PASS/FAIL/INCONCLUSIVE with evidence, and PROGRESS.md points to it."
+covers = ["R18", "R19"]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+hitl = true
+risk = "medium"
+refine = true
+references = ["architecture — docs/planning/architecture.md, AD-21", "architecture — docs/planning/architecture.md, AD-24"]
+
