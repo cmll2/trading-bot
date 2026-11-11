@@ -1,0 +1,30 @@
+# Python / uv
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Secrets — real secrets live OUTSIDE the repo; never commit any .env
+.env
+.env.*
+!.env.example
+*.key
+*secret*
+!**/test_*secret*.py
+
+# Runtime state, data, logs
+data/
+var/
+logs/
+*.sqlite
+*.sqlite3
+*.db
+*.parquet
+KILL_SWITCH
+
+# Local tooling
+.claude/settings.local.json

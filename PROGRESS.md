@@ -1,0 +1,65 @@
+# PROGRESS
+
+Read this first in every session. Source of truth for the brief: `first_brief.txt`.
+
+## Status
+
+- **Current phase:** Pre-M0 — planning (BMAD full track, brief §14).
+- **Blocked on:** build-vs-reuse decision (brief §13) — no custom build starts before it.
+
+## Done
+
+- 2026-11-11 — Brief read. Launched in parallel: Freqtrade/Kraken research (`docs/research/build-vs-reuse-and-kraken.md`) and PRD (`docs/planning/prd.md`).
+
+- 2026-11-11 — PRD written: `docs/planning/prd.md` (CON/SAF/GL verbatim from brief, FR-01–66, NFR-01–10, OD-01–19). Gaps found: pair needed at M1 not M2; kill switch/halts don't address open orders/positions; withdrawal check unenforceable if API can't report permissions; €20 with €5 min can leave unsellable dust; GL-02 tolerance undefined; Streamlit binds 0.0.0.0 by default (must set `server.address=127.0.0.1`).
+
+## Next
+
+1. Present build-vs-reuse recommendation + all §13 open decisions to the user in one batch.
+2. UX spec for dashboard (§7), architecture (broker interface + state store first), epics M0–M6 → stories.
+3. M0 scaffold. Stop for review at end of each milestone with an independent audit report (§8).
+
+## Decisions log
+
+| Date | Decision | Reason |
+|------|----------|--------|
+| 2026-11-11 | Follow BMAD full planning track | Brief §14: safety requirements benefit from explicit architecture step |
+| 2026-11-11 | Python via `uv` managed interpreter (system has 3.10, brief needs ≥3.11) | Brief §6 |
+| 2026-11-11 | **Custom build (Option A)** — user choice | Freqtrade gaps: no client order IDs, reconciliation only logs, timed (not manual-reset) halts, no key-permission check, control-panel UI, silent min-stake round-up; ~300 KB to audit, 44 deps |
+| 2026-11-11 | **EUR-quoted pair**; specific market chosen by research on market quality (user: "not only BTC, find the easiest market") — not by backtest returns (avoid selection bias) | User choice; tax simplicity; no 0.20% stablecoin conversion |
+| 2026-11-11 | **Daily candles** for v0 | Lowest fee drag; manual approval practical |
+| 2026-11-11 | **Post-only limit orders, re-priced within a window, then cancel & skip** (journal: "not filled") | Maker 0.40% vs taker 0.80% |
+| 2026-11-11 | **Manual approval per order** as default for first live weeks; engine supports both | User choice |
+| 2026-11-11 | **Risk limits:** max position 100% equity & €25 abs; 4 orders/day; daily loss 10%; total drawdown 25% from start (manual reset); stale: candle > 2 intervals, ticker > 120 s; price sanity 2% | User accepted defaults |
+| 2026-11-11 | **Dry-run host: this Windows PC** (keep code portable) | User choice |
+| 2026-11-11 | **GL-02 tolerance:** each paper fill within 0.5% of backtest-predicted price; 4-week equity within 2 pp | User accepted defaults |
+| 2026-11-11 | Key permissions checked via Kraken `GetApiKeyInfo`; refuse start if withdraw enabled or call fails | Research B3 |
+| 2026-11-11 | Fees from `fetch_trading_fee` only (market metadata no longer carries fees; ccxt defaults stale) | Research B2 |
+| 2026-11-11 | Before any order retry, look up `cl_ord_id` in open AND closed orders (Kraken dedups only among open) | Research B4 |
+| 2026-11-11 | History: Kraken official OHLCVT CSV archive + ccxt for recent gap, overlap check; explicit no-trade-period policy | Research B6: OHLC endpoint limited to 720 candles |
+
+| 2026-11-11 | UX spec: `docs/planning/ux-dashboard/{DESIGN,EXPERIENCE}.md`. Dashboard can only **engage** kill switch (with confirm); disengage + halt reset are CLI-only | Safer narrowing of brief "toggle"; flag to user at M4 review |
+| 2026-11-11 | Timestamps stored in UTC; tax-year boundaries for disposal totals computed in Europe/Paris | French tax year is the local calendar year |
+
+| 2026-11-11 | Architecture: `docs/planning/architecture.md` (AD-1..AD-30). Kill switch/halt = cancel resting orders, keep position; `bot flatten` is manual | Never force a sale automatically under a fault condition |
+| 2026-11-11 | **"Max 4 orders/day" = 4 new order intents/day; plus a separate hard cap of 24 exchange submissions/day (re-prices count)** — *flag at review: interpretation of a protected limit* | Re-pricing would otherwise make the limit meaningless or block execution; both caps are conservative |
+| 2026-11-11 | Execution window 6 h after daily close (00:00 UTC); re-price at most every 30 min, max 12 submissions per intent; then cancel & skip | Fits within 24 submissions/day |
+| 2026-11-11 | Holdout = fixed window 2025-11-11 → 2026-11-10 (UTC), frozen in config; never moves | Rolling boundary would leak holdout into tuning over time |
+| 2026-11-11 | DECAYING: needs ≥20 trades and backtest avg/trade > 0; if backtest avg ≤ 0 the strategy is shown as "NO EDGE IN BACKTEST" instead | DECAYING rule undefined for non-positive baseline |
+| 2026-11-11 | Risk limits stay in `config.yaml` under `risk:` (protected); loaded read-only | Brief §5.5 says config.yaml |
+| 2026-11-11 | Halt reset does NOT rebase drawdown baseline unless `--rebase` is passed explicitly (with confirmation) | Conservative default |
+| 2026-11-11 | Windows supervision: Task Scheduler (at logon + restart on failure), documented at M3 | Host = this PC |
+
+## Brief corrections (from research)
+
+- Kraken minimums are lower than brief states (live: 0.00006 BTC, 0.002 ETH, €0.45 cost min) — always read from metadata.
+- Kraken API *can* report key permissions (`GetApiKeyInfo`).
+
+## Pair decision (2026-11-11)
+
+**BTC/EUR (Kraken `XBT/EUR`), single pair for v0.** Selected on ex-ante market quality only (no cross-pair backtests; holdout untouched) — see `docs/research/pair-selection.md`. Runner-ups for later (≥ ~€100 capital, after M6): ETH/EUR, XRP/EUR, SOL/EUR. No basket in v0: thin min-order margin at €20, order-count budget, high correlation with BTC.
+Implementation notes: sell orders use `oflags=post,fciq` (fee in quote currency) so the full base balance can be sold; re-read minimums at startup; handle sub-minimum partial-fill remainders; audit 2013–2016 daily gaps at M1.
+
+## Open decisions
+
+- None blocking. (UX: approval channel = CLI prompt by default.)

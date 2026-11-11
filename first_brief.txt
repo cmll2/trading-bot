@@ -1,0 +1,200 @@
+# Project brief: small-capital crypto trading bot with dry-run dashboard
+
+Paste this into a fresh Claude Code session opened in an empty project folder, or use it as the input to BMAD's product brief / PRD step (see section 14).
+
+## 1. Goal
+
+Build a rules-based spot crypto trading bot that I can run on my own computer, observe in dry-run through a local dashboard, and then run live with about €20.
+
+The purpose of the first version is to prove the pipeline end to end: data, backtest, simulated execution, monitoring, then live execution with strict limits. Profit is not the success criterion for v1. Correctness, observability and safety are.
+
+## 2. Non-goals for v1
+
+- No LLM in the trading decision loop (planned later as a measured experiment, section 12).
+- No leverage, margin, futures, shorting or derivatives. Spot, long or flat only.
+- No market making, arbitrage or high-frequency logic.
+- No prediction markets.
+- No multi-exchange support, though the broker interface should not prevent it later.
+- No cloud deployment. Everything runs locally.
+
+## 3. Hard constraints
+
+- **Exchange:** Kraken spot, via the `ccxt` library.
+- **Capital:** about €20 live. Position sizing must respect Kraken's minimum order sizes (at the time of writing: €5 for EUR-quoted orders, 0.0001 BTC, 0.01 ETH). Read minimums, price precision and fee rates from the exchange's market metadata at startup. Do not hardcode them.
+- **Fees:** every backtest and every dry-run fill must include fees taken from the exchange's fee schedule for my tier, plus a configurable slippage assumption. For reference, Kraken Pro's entry tier was 0.40% maker / 0.80% taker on spot crypto pairs when this brief was written (November 2026), so a round trip with market orders costs about 1.6% and with resting limit orders about 0.8%. Read the live rates from the API; treat these numbers only as a sanity check. Every backtest report must show results at both maker and taker rates.
+- **Stablecoin pairs:** USDT is not available to EEA clients on Kraken. If a stablecoin-quoted pair is chosen, confirm which stablecoins are tradable from a French account and which fee schedule applies before building on it.
+- **Trade frequency:** low. Fees make frequent trading unviable at this size, so strategies work on 4h or daily candles.
+- **Tax bookkeeping (France):** keep a complete ledger of every fill, with timestamps, amounts, prices, fees and the quote currency, exportable to CSV. Mark separately the trades that convert crypto to euros, since those are the ones that count toward the annual disposal total. The choice between a EUR-quoted pair and a stablecoin-quoted pair is an open decision (section 13); the code must support both.
+
+## 4. Safety and security rules (non-negotiable)
+
+- API keys live in a secrets file stored outside the repository folder; the repo holds only its path and a `.env.example` with empty values. Never print, log, commit or ask me to paste a key into the chat, and never open or read the secrets file during development.
+- Kraken lets an API key be restricted to given IP addresses. If the machine running the bot has a stable IP, I will turn this on; remind me at M6.
+- **Protected files:** the risk limits in `config.yaml`, the `risk/` module and its tests may only be changed when I ask for it explicitly in the chat, in a commit that touches nothing else. The running bot has no code path that can edit its own limits.
+- I will create the Kraken API key myself with query and trade permissions only. No withdrawal permission. The bot should check the key's permissions at startup if the API allows it and refuse to start if withdrawals are enabled.
+- Three run modes: `backtest`, `dry-run`, `live`. `live` requires both a CLI flag and an environment variable, and prints a confirmation banner with the account balance and the active limits.
+- During development, never place a real order. Tests use a fake broker. Nothing in the test suite may touch the live trading endpoints.
+- Pin all dependencies with a lockfile. Ask me before adding any dependency beyond those in section 6. Do not install third-party "trading skills", plugins or packages from unknown sources.
+- The dashboard binds to `127.0.0.1` only.
+
+## 5. Architecture
+
+One Python package with clear module boundaries. The same strategy code and the same order logic must run in all three modes; only the broker and the clock change.
+
+```
+bot/
+  config.py        # typed settings loaded from config.yaml + .env
+  data/            # candle download, local cache, validation
+  strategy/        # Strategy interface + v0 implementation
+  backtest/        # event-driven backtester, metrics, walk-forward
+  broker/          # Broker interface, PaperBroker, KrakenBroker
+  risk/            # pre-trade checks, limits, kill switch
+  engine.py        # main loop: candle -> signal -> risk -> order
+  store.py         # SQLite persistence
+  ledger.py        # fills ledger and CSV export
+  cli.py           # entry points
+dashboard/         # local web dashboard, read-only on the store
+tests/
+config.yaml
+.env.example
+```
+
+### 5.1 Data
+
+- Download OHLCV candles from Kraken through ccxt, with pagination and rate-limit handling, cached locally as Parquet.
+- Validate: no gaps, no duplicates, monotonic timestamps, UTC everywhere. Report and fail loudly on bad data.
+- Signals are computed only on closed candles.
+
+### 5.2 Strategy interface
+
+- `Strategy.on_candle(history) -> TargetPosition`, where target position is a fraction of equity between 0 and 1.
+- Strategies are pure functions of past data with explicit parameters. No access to the broker, the clock or the network.
+- **v0 strategy:** a simple, slow trend filter, long or flat, on one pair (for example: long when price is above a long moving average, flat otherwise, evaluated on daily candles). It exists to exercise the pipeline. Parameters are fixed in config before any out-of-sample evaluation.
+- Benchmarks always reported next to any strategy: buy-and-hold of the same pair, and holding cash.
+- **Plumbing strategy (dry-run only):** a second strategy that trades on a short timeframe on purpose, with no claim to any edge. A daily trend filter may place only a handful of orders in four weeks, which is too few to exercise order handling, restarts and the dashboard. The plumbing strategy generates enough simulated orders to test them. It must be impossible to run it in live mode.
+
+### 5.3 Backtester
+
+- Event-driven, candle by candle. A signal computed on candle *t* close is executed at candle *t+1* open, with fees and slippage applied.
+- Enforces minimum order size and precision exactly as the live broker would. An order below the minimum is rejected and logged, not silently rounded.
+- Metrics: total return, annualized return, max drawdown, Sharpe, number of trades, turnover, total fees paid, time in market, all compared with the benchmarks.
+- Walk-forward evaluation with a held-out final period (the most recent 12 months) that is never used for tuning. The holdout is run once per strategy, at the end, and its result is reported even if it kills the idea. Every holdout run is recorded with its date and git commit, so a second run is visible.
+- One change at a time, at most five changes per strategy, each logged in `changes.md` with its result and git commit. Every result is saved with the code version, config and data date range that produced it.
+- When a strategy does not beat buy-and-hold after costs, the report says so in its first line.
+- Every parameter search writes the number of configurations tried to the results file, so results can be judged against the number of trials. Include a bootstrap confidence interval on the Sharpe ratio.
+- A test that deliberately introduces look-ahead (using candle *t+1* data at *t*) must be caught by a guard in the backtester.
+
+### 5.4 Broker
+
+- `Broker` interface: `get_balance`, `get_ticker`, `place_order`, `cancel_order`, `get_open_orders`, `get_fills`.
+- `PaperBroker`: simulates fills against live prices for dry-run, with the same fees, minimums and slippage model as the backtester. Persists its virtual balance in SQLite so dry-run survives restarts.
+- `KrakenBroker`: real orders. Uses client order IDs so a retried request can never create a duplicate order. Handles partial fills, rejections, timeouts and rate limits.
+- On startup in any mode, reconcile local state with the broker's state (balances, open orders) and stop if they disagree.
+
+### 5.5 Risk manager
+
+Every order passes through pre-trade checks. Limits are in `config.yaml`:
+
+- maximum position size as a fraction of equity and as an absolute amount
+- maximum number of orders per day
+- maximum daily loss and maximum total drawdown from the starting balance; breaching either halts trading until I reset it manually
+- stale-data check: no trading if the last candle or ticker is older than a threshold
+- price sanity check: reject orders if the price moved more than a threshold since the signal
+- kill switch: a file on disk (and a dashboard button) that stops all new orders immediately
+
+Every rejection is stored with its reason.
+
+### 5.6 Engine and persistence
+
+- A loop that wakes at candle close, fetches data, computes the signal, runs risk checks, sends orders and records everything.
+- Crash-safe: all state in SQLite (signals, orders, fills, equity snapshots, risk events, heartbeats, errors). Restarting the process resumes cleanly.
+- **Journal:** every signal is logged with its outcome (filled, not filled, rejected by risk, skipped by me), and for signals that were not traded, what the trade would have returned. A weekly review compares realized results with what the backtest expected for the same period and is shown in the dashboard. Once there are 20 or more trades, if the average result per trade is below half the backtest's, the strategy is flagged DECAYING.
+- Structured logs to file, with secrets redacted.
+
+## 6. Tech stack
+
+- Python 3.11 or later, `uv` for environment and lockfile
+- `ccxt`, `pandas`, `pyarrow`, `pydantic`, `pyyaml`, `python-dotenv`
+- SQLite through the standard library or SQLAlchemy
+- `pytest` for tests, `ruff` for lint and format
+- Dashboard: Streamlit with Plotly charts (propose an alternative if there is a strong reason)
+
+## 7. Dashboard
+
+A local, read-only web dashboard that reads the SQLite store. The only action it can take is toggling the kill switch. It auto-refreshes.
+
+1. **Overview:** current mode shown prominently (DRY-RUN or LIVE), engine status and last heartbeat, equity, cash, open position, return since start, total fees paid, and an equity curve plotted against buy-and-hold and cash.
+2. **Signals and trades:** price chart with the strategy's indicator, entry and exit markers, and the current target position.
+3. **Orders and fills:** table of orders with status, fills with price, fee and slippage versus the signal price, filterable by date.
+4. **Risk:** each limit with its current usage, a history of rejections and halts with reasons, kill switch state and button.
+5. **Dry-run vs backtest:** for the same period, the equity the backtester predicts versus what the paper broker actually recorded, with the difference per trade. This is the main tool for judging whether the backtest assumptions are realistic.
+6. **Health:** recent errors, API latency, rate-limit events, data freshness, uptime.
+7. **Ledger:** fills ledger with CSV export, including the running total of crypto-to-euro sales for the calendar year.
+
+## 8. Testing
+
+- Unit tests for the strategy, sizing, fee and minimum-order logic, and every risk rule.
+- Backtester tests on synthetic price series with known outcomes.
+- Engine tests with a fake broker and a fake clock, covering restart mid-order, partial fills, duplicate-order prevention, API errors and stale data.
+- A consistency test: backtest and paper broker produce the same trades on the same recorded data.
+- Never delete, skip or weaken a test to make the suite pass. If a test fails, fix the code or report the failure and stop.
+- **Independent audit:** at the end of each milestone, a reviewer that did not write the code (a fresh session, a separate subagent, or BMAD's review step) runs the tests itself, reads the git history for deleted, skipped or weakened tests and for extra holdout runs, looks for look-ahead bias, missing costs and overfitting, and rates each result PASS, FAIL or INCONCLUSIVE. I see that report before I review the milestone.
+
+## 9. Milestones and acceptance criteria
+
+- **M0 Scaffold:** repo, lockfile, config, `.env.example`, `.gitignore`, CI-style test command. *Done when* tests and lint pass on an empty skeleton.
+- **M1 Data:** downloader, cache, validation. *Done when* several years of daily and 4h candles for the chosen pair are cached and validated.
+- **M2 Backtester and v0 strategy:** *Done when* a backtest report with metrics and benchmarks is generated from one command, and the look-ahead guard test passes.
+- **M3 Paper broker, engine, risk manager:** *Done when* the engine runs in dry-run for 48 hours without intervention and survives a forced restart.
+- **M4 Dashboard:** *Done when* all seven views work against the dry-run database.
+- **M5 Dry-run period:** at least four weeks, reviewed weekly.
+- **M6 Live with €20:** only if the go-live criteria in section 10 are met.
+
+Work one milestone at a time. At the end of each one, stop, summarize what was built, list known limitations, and wait for my review.
+
+## 10. Go-live criteria (fixed in advance)
+
+- Four weeks of dry-run with no unhandled errors and no state mismatch on reconciliation.
+- Dry-run fills within a stated tolerance of backtest predictions over the same period.
+- Every risk limit triggered at least once in tests and seen working.
+- Kill switch tested from both the file and the dashboard.
+- I have read the code of the broker, risk and engine modules myself.
+
+Go-live does not depend on the dry-run being profitable. If the strategy shows no edge after costs, that is a valid result and the decision to put €20 on it is mine.
+
+## 11. Working rules for the coding agent
+
+- Explain design choices briefly before implementing each milestone, and flag anything in this brief that looks wrong or unsafe.
+- Prefer small, readable modules to clever abstractions. I need to be able to audit this.
+- Never weaken a safety rule from section 4 to make something work. Stop and ask.
+- State uncertainty plainly. If Kraken's API behaves differently from what this brief assumes, tell me and propose a change.
+- Do not present backtest results as evidence that the strategy will make money.
+- Never say that a process is running, a test passed or an order filled without having checked it in this session. Label anything simulated as simulated.
+- Keep `PROGRESS.md` up to date with what is done, what is next, and every decision with its reason. Read it first in every new session.
+
+## 12. Later, out of scope for now
+
+- LLM signal experiment: an LLM scores news or sentiment into a numeric feature that a fixed rule consumes. It runs in dry-run alongside the baseline and is judged only on data after the model's training cutoff, because an LLM backtested on earlier periods may already know how they turned out. If the model outputs a confidence, measure its calibration (Brier score) before using it for anything. A model call is never part of the risk checks or the kill switch, and a slow or failed call means no trade.
+- Additional strategies and pairs, notifications (Telegram or email), running on a small always-on machine.
+
+## 13. Open decisions for me
+
+- **Build or reuse (settle before M0):** Freqtrade is an open-source Python bot that already supports Kraken and ships with dry-run, backtesting, SQLite persistence, a web UI and a look-ahead bias checker. Option A is the custom build described in section 5: smaller, fully auditable, more to get wrong in order handling. Option B is Freqtrade as the execution engine, with my strategy written as a Freqtrade strategy, and the custom work limited to the risk rules it lacks, the ledger export and the dry-run-versus-backtest view. Before M0, read Freqtrade's current documentation, list which requirements in sections 4, 5 and 7 it covers and which it does not, and give me a recommendation. Do not start the custom build until I have chosen.
+- Pair: EUR-quoted (simple, but every sale counts toward the annual disposal total) or stablecoin-quoted (crypto-to-crypto).
+- Candle timeframe for v0: daily or 4h.
+- Limit orders or market orders for execution.
+- Approval mode for the first live weeks: either the bot trades on its own within the limits, or it sends me each order and waits for my approval. The engine must support both; with a daily strategy, approving by hand is practical.
+- Values for the risk limits.
+- Where the bot runs during the four-week dry-run, since the computer must stay on.
+
+Ask me these before M2 rather than choosing silently.
+
+## 14. If using BMAD
+
+Treat this document as the product brief. The suggested path is the full planning track rather than the quick flow, because the safety requirements benefit from an explicit architecture step:
+
+1. PRD from this brief, keeping sections 3, 4 and 10 as non-negotiable requirements.
+2. A short UX spec for the dashboard (section 7).
+3. Architecture document from section 5, with the broker interface and the state store defined first.
+4. Epics mapped one to one onto milestones M0 to M6, then stories.
+5. Implementation story by story, with the working rules in section 11 added to the developer agent's instructions.
