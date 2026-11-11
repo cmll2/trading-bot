@@ -70,7 +70,7 @@ class ExecutionSettings(_Frozen):
     approval: Literal["manual", "autonomous"]  # AD-16
     window_hours: int = Field(gt=0)
     reprice_interval_minutes: int = Field(gt=0)
-    max_submissions_per_intent: int = Field(gt=0)
+    # Submission caps (per intent and per day) live in the protected risk: section.
 
 
 class BacktestSettings(_Frozen):
@@ -126,10 +126,6 @@ class Settings(_Frozen):
             raise ValueError("execution.window_hours must not exceed the strategy timeframe (AD-5)")
         if self.execution.reprice_interval_minutes * 60 > window_s:
             raise ValueError("execution.reprice_interval_minutes must fit in the window")
-        if self.execution.max_submissions_per_intent > self.risk.max_exchange_submissions_per_day:
-            raise ValueError(
-                "execution.max_submissions_per_intent exceeds risk.max_exchange_submissions_per_day"
-            )
         return self
 
 

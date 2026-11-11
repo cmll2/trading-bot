@@ -28,7 +28,7 @@ execution:
   approval: manual                  # manual | autonomous (AD-16)
   window_hours: 6                   # after the daily close (00:00 UTC)
   reprice_interval_minutes: 30
-  max_submissions_per_intent: 12    # per-intent cap; daily hard cap is in risk:
+  # per-intent and daily submission caps are protected: see risk:
 
 slippage_bps: 5                     # configurable slippage assumption (CON-04)
 

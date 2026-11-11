@@ -60,7 +60,7 @@ def test_repo_config_loads_with_expected_values() -> None:
     assert s.strategy.timeframe == "1d"
     assert s.execution.window_hours == 6
     assert s.execution.reprice_interval_minutes == 30
-    assert s.execution.max_submissions_per_intent == 12
+    assert s.risk.max_submissions_per_intent == 12  # moved to protected risk:
     assert str(s.backtest.holdout_start) == "2025-11-11"
     assert str(s.backtest.holdout_end) == "2026-11-10"
     assert s.review.gl02_max_fill_price_diff_fraction == Decimal("0.005")
@@ -207,8 +207,15 @@ def test_per_intent_cap_above_daily_cap_is_refused(repo: Path) -> None:
     daily = yaml.safe_load((repo / "config.yaml").read_text(encoding="utf-8"))["risk"][
         "max_exchange_submissions_per_day"
     ]
-    _edit_config(repo, execution__max_submissions_per_intent=daily + 1)
+    _edit_config(repo, risk__max_submissions_per_intent=daily + 1)
     with pytest.raises(ConfigError, match="max_submissions_per_intent"):
+        _load(repo)
+
+
+def test_per_intent_cap_is_refused_in_unprotected_execution_section(repo: Path) -> None:
+    # The cap is protected (risk:); it must not be settable from execution:.
+    _edit_config(repo, execution__max_submissions_per_intent=12)
+    with pytest.raises(ConfigError):
         _load(repo)
 
 
