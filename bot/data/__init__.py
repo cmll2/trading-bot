@@ -6,5 +6,6 @@ Modules:
 - update: incremental cache update (``bot data update``)
 - validate: fail loudly, never repair (``bot data validate``)
 - archive: Kraken OHLCVT ZIP archive import, checksum first (``bot data import-archive``)
+- merge: overlap-checked merge of archive, synthetic and API rows (both writers)
 - market: MarketData port
 """

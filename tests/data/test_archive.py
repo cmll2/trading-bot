@@ -14,6 +14,7 @@ import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+import ccxt
 import pandas as pd
 import pytest
 import yaml
@@ -36,6 +37,7 @@ from tests.data.archive_fixtures import (
     standard_members,
     standard_zip,
 )
+from tests.data.fakes import START_MS, TICK, FakeExchange, candles, rows
 
 NOW = datetime(2026, 11, 11, tzinfo=UTC)
 ALL_TFS = ("1d", "4h", "15m")
@@ -48,6 +50,18 @@ def repo(tmp_path: Path) -> Path:
     root.mkdir()
     shutil.copy(REPO_ROOT / "config.yaml", root / "config.yaml")
     return root
+
+
+@pytest.fixture(autouse=True)
+def exchange(monkeypatch: pytest.MonkeyPatch) -> FakeExchange:
+    """Story 4: the CLI reads the price tick from (fake) public market metadata."""
+    ex = FakeExchange()
+    monkeypatch.setattr(cli, "_exchange_factory", lambda: ex)
+    return ex
+
+
+def _tick() -> float:
+    return TICK
 
 
 @pytest.fixture
@@ -199,7 +213,9 @@ def test_member_in_subfolder_matched(repo) -> None:
             ("Kraken_OHLCVT/AIXBTEUR_240.csv", kraken_csv(START_S, 4, 14_400, base=9000.0)),
         ],
     )
-    out = import_archive(_settings(repo), zip_path, sha256_hex(zip_path), ["4h"], now=NOW)
+    out = import_archive(
+        _settings(repo), zip_path, sha256_hex(zip_path), ["4h"], tick_provider=_tick, now=NOW
+    )
     assert len(out["4h"]) == 4
     assert read_cache(_cache(repo, "4h")) is not None
 
@@ -208,7 +224,9 @@ def test_unsorted_member_is_sorted_before_policy(repo) -> None:
     csv = kraken_csv(START_S, 5, 86_400)
     lines = csv.strip().split("\n")
     zip_path = build_zip(repo / "a.zip", [("XBTEUR_1440.csv", "\n".join(lines[::-1]) + "\n")])
-    out = import_archive(_settings(repo), zip_path, sha256_hex(zip_path), ["1d"], now=NOW)
+    out = import_archive(
+        _settings(repo), zip_path, sha256_hex(zip_path), ["1d"], tick_provider=_tick, now=NOW
+    )
     assert out["1d"]["open_at"].is_monotonic_increasing
 
 
@@ -254,7 +272,9 @@ def test_missing_member_refused_naming_it_earlier_tf_stays(repo, clock, capsys) 
 def test_duplicate_member_refused(repo, names) -> None:
     zip_path = build_zip(repo / "a.zip", [(n, kraken_csv(START_S, 3, 86_400)) for n in names])
     with pytest.raises(ArchiveError, match="appears 2 times") as exc:
-        import_archive(_settings(repo), zip_path, sha256_hex(zip_path), ["1d"], now=NOW)
+        import_archive(
+            _settings(repo), zip_path, sha256_hex(zip_path), ["1d"], tick_provider=_tick, now=NOW
+        )
     assert exc.value.timeframe == "1d"
     assert not _cache(repo, "1d").exists()
 
@@ -263,7 +283,9 @@ def test_oversize_declared_member_refused(repo, monkeypatch) -> None:
     monkeypatch.setattr(archive, "MAX_MEMBER_BYTES", 50)
     zip_path = build_zip(repo / "a.zip", [("XBTEUR_1440.csv", kraken_csv(START_S, 5, 86_400))])
     with pytest.raises(ArchiveError, match="declares .* above the 50 cap"):
-        import_archive(_settings(repo), zip_path, sha256_hex(zip_path), ["1d"], now=NOW)
+        import_archive(
+            _settings(repo), zip_path, sha256_hex(zip_path), ["1d"], tick_provider=_tick, now=NOW
+        )
     assert not _cache(repo, "1d").exists()
 
 
@@ -284,7 +306,9 @@ def test_encrypted_member_refused(repo) -> None:
         raw[pos + flag_offset] |= 0x1
     zip_path.write_bytes(bytes(raw))
     with pytest.raises(ArchiveError, match=r"^member XBTEUR_1440\.csv is encrypted$"):
-        import_archive(_settings(repo), zip_path, sha256_hex(zip_path), ["1d"], now=NOW)
+        import_archive(
+            _settings(repo), zip_path, sha256_hex(zip_path), ["1d"], tick_provider=_tick, now=NOW
+        )
 
 
 def test_not_a_zip_refused(repo, clock, capsys) -> None:
@@ -340,7 +364,9 @@ def test_inconsistent_row_refused_by_validation(repo, clock, capsys) -> None:
 def test_duplicate_timestamps_refused(repo) -> None:
     zip_path = build_zip(repo / "a.zip", [("XBTEUR_1440.csv", GOOD + GOOD)])
     with pytest.raises(ArchiveError, match="duplicate open_at"):
-        import_archive(_settings(repo), zip_path, sha256_hex(zip_path), ["1d"], now=NOW)
+        import_archive(
+            _settings(repo), zip_path, sha256_hex(zip_path), ["1d"], tick_provider=_tick, now=NOW
+        )
 
 
 # --- no-trade policy -----------------------------------------------------------------------
@@ -384,17 +410,23 @@ def test_no_trade_gap_under_fail_policy_exit_4_writes_nothing(repo, clock, capsy
 # --- existing cache ------------------------------------------------------------------------
 
 
-def test_existing_cache_refused_until_story_4(repo, clock, capsys) -> None:
+def test_existing_cache_reimport_merges_identically(repo, clock, capsys) -> None:
+    """Story 3 refused an existing cache ("merge arrives in story 4"); story 4 replaces the
+    refusal by the overlap-checked merge: re-importing the same archive agrees row for row
+    and leaves the cached rows unchanged."""
     zip_path = standard_zip(repo)
     path = _cache(repo, "1d")
-    existing = import_archive(_settings(repo), zip_path, sha256_hex(zip_path), ["1d"], now=NOW)
-    before = path.read_bytes()
+    existing = import_archive(
+        _settings(repo), zip_path, sha256_hex(zip_path), ["1d"], tick_provider=_tick, now=NOW
+    )
+    before = read_cache(path)
 
     code = _import(repo, zip_path, sha256_hex(zip_path), "1d")
 
-    assert code == 4
-    assert "cache exists; merge arrives in story 4" in capsys.readouterr().err
-    assert path.read_bytes() == before
+    out, err = capsys.readouterr()
+    assert code == cli.EXIT_OK, err
+    pd.testing.assert_frame_equal(read_cache(path), before)
+    assert "1d: overlap rows_compared=10 max_price_diff_ticks=0 max_volume_diff_fraction=0" in out
     assert len(existing["1d"]) == 10
 
 
@@ -402,7 +434,9 @@ def test_existing_empty_cache_is_replaced(repo) -> None:
     zip_path = standard_zip(repo)
     path = _cache(repo, "1d")
     write_cache(path, normalize(pd.DataFrame({c: [] for c in COLUMNS})))
-    out = import_archive(_settings(repo), zip_path, sha256_hex(zip_path), ["1d"], now=NOW)
+    out = import_archive(
+        _settings(repo), zip_path, sha256_hex(zip_path), ["1d"], tick_provider=_tick, now=NOW
+    )
     assert len(out["1d"]) == 10
     df = read_cache(path)
     assert df is not None and len(df) == 10
@@ -453,3 +487,206 @@ def test_cli_requires_zip_and_sha256(repo, capsys) -> None:
     with pytest.raises(SystemExit) as exc:
         _run(repo, "import-archive")
     assert exc.value.code == 2
+
+
+# --- story 4: merge with an overlap check --------------------------------------------------
+
+
+def _api_cache_via_update(repo: Path, exchange: FakeExchange, n: int = 10) -> pd.DataFrame:
+    """``bot data update`` writes an api cache of ``n`` daily candles from START (2024)."""
+    exchange.script.append(candles(START_MS, n))
+    assert _run(repo, "update", "--timeframe", "1d") == cli.EXIT_OK
+    df = read_cache(_cache(repo, "1d"))
+    assert df is not None and set(df["source"]) == {"api"}
+    return df
+
+
+def _csv_from(
+    df: pd.DataFrame,
+    close_delta: dict[int, float] | None = None,
+    volume_factor: dict[int, float] | None = None,
+) -> str:
+    """SYNTHETIC archive CSV restating ``df``'s rows, with optional per-row changes."""
+    close_delta, volume_factor = close_delta or {}, volume_factor or {}
+    lines = []
+    for i, r in df.reset_index(drop=True).iterrows():
+        ts = int(r["open_at"].value // 1_000_000_000)
+        close = r["close"] + close_delta.get(i, 0.0)
+        volume = r["volume"] * volume_factor.get(i, 1.0)
+        lines.append(f"{ts},{r['open']!r},{r['high']!r},{r['low']!r},{close!r},{volume!r},42")
+    return "\n".join(lines) + "\n"
+
+
+def _pre_rows(n: int) -> pd.DataFrame:
+    """``n`` SYNTHETIC archive-only days just before START (days -n..-1)."""
+    return rows(list(range(-n, 0)), ["archive"] * n)
+
+
+def test_archive_two_ticks_off_on_close_exits_4_cache_byte_identical(
+    repo, clock, capsys, exchange
+) -> None:
+    """AC1: 2-tick close difference on the overlap -> exit 4 naming close; bytes unchanged."""
+    api = _api_cache_via_update(repo, exchange)
+    path = _cache(repo, "1d")
+    before = path.read_bytes()
+    overlap = api.iloc[:5]
+    csv = _csv_from(_pre_rows(3)) + _csv_from(overlap, close_delta={2: 2 * TICK})
+    zip_path = build_zip(repo / "a.zip", [("XBTEUR_1440.csv", csv)])
+    capsys.readouterr()
+
+    code = _import(repo, zip_path, sha256_hex(zip_path), "1d")
+
+    err = capsys.readouterr().err
+    assert code == 4
+    assert "DATA ERROR [1d]: overlap mismatch on close" in err, err
+    assert repr(float(overlap["close"].iloc[2])) in err
+    assert repr(float(overlap["close"].iloc[2] + 2 * TICK)) in err
+    assert "2024-01-03" in err
+    assert path.read_bytes() == before
+
+
+def test_archive_volume_off_exits_4_naming_volume(repo, clock, capsys, exchange) -> None:
+    api = _api_cache_via_update(repo, exchange)
+    path = _cache(repo, "1d")
+    before = path.read_bytes()
+    zip_path = build_zip(
+        repo / "a.zip", [("XBTEUR_1440.csv", _csv_from(api.iloc[:3], volume_factor={1: 1.015}))]
+    )
+
+    assert _import(repo, zip_path, sha256_hex(zip_path), "1d") == 4
+    assert "overlap mismatch on volume" in capsys.readouterr().err
+    assert path.read_bytes() == before
+
+
+def test_archive_agreeing_overlap_becomes_archive_api_rows_stay(
+    repo, clock, capsys, exchange
+) -> None:
+    """AC2: within 1 tick and 1% volume -> overlap rows become archive, api-only rows stay
+    api, and ``bot data validate`` exits 0."""
+    api = _api_cache_via_update(repo, exchange)
+    overlap = api.iloc[:5]
+    csv = _csv_from(_pre_rows(3)) + _csv_from(
+        overlap, close_delta={0: TICK, 3: -TICK}, volume_factor={1: 1.009, 4: 0.991}
+    )
+    zip_path = build_zip(repo / "a.zip", [("XBTEUR_1440.csv", csv)])
+    capsys.readouterr()
+
+    code = _import(repo, zip_path, sha256_hex(zip_path), "1d")
+
+    out, err = capsys.readouterr()
+    assert code == cli.EXIT_OK, err
+    df = read_cache(_cache(repo, "1d"))
+    assert df is not None and len(df) == 13
+    assert df["source"].tolist() == ["archive"] * 8 + ["api"] * 5
+    assert df["open_at"].iloc[3:].tolist() == api["open_at"].tolist()
+    assert df["trades"].iloc[3:8].tolist() == [42] * 5  # archive rows kept, not patched
+    assert df["close"].iloc[3] == pytest.approx(api["close"].iloc[0] + TICK)
+    pd.testing.assert_frame_equal(
+        df.iloc[8:].reset_index(drop=True), api.iloc[5:].reset_index(drop=True)
+    )
+    assert "1d: overlap rows_compared=5 max_price_diff_ticks=1 " in out
+    assert "sources={'archive': 8, 'api': 5, 'synthetic': 0}" in out
+    assert _run(repo, "validate", "--timeframe", "1d") == cli.EXIT_OK
+
+
+def test_archive_then_update_keeps_archive_and_appends_api(repo, clock, exchange) -> None:
+    """Archive cache first, then ``bot data update``: only later candles requested, merged."""
+    zip_path = build_zip(repo / "a.zip", [("XBTEUR_1440.csv", kraken_csv(START_S, 5, 86_400))])
+    assert _import(repo, zip_path, sha256_hex(zip_path), "1d") == cli.EXIT_OK
+    exchange.script.append(candles(START_MS + 5 * 86_400_000, 3))
+
+    assert _run(repo, "update", "--timeframe", "1d") == cli.EXIT_OK
+
+    assert exchange.calls[0]["since"] == START_MS + 5 * 86_400_000
+    df = read_cache(_cache(repo, "1d"))
+    assert df is not None and df["source"].tolist() == ["archive"] * 5 + ["api"] * 3
+
+
+def test_gap_between_archive_and_api_is_a_download_gap(repo, clock, capsys, exchange) -> None:
+    api = _api_cache_via_update(repo, exchange)
+    path = _cache(repo, "1d")
+    before = path.read_bytes()
+    pre = _pre_rows(5).iloc[:4]  # days -5..-2: day -1 missing between archive and api
+    zip_path = build_zip(repo / "a.zip", [("XBTEUR_1440.csv", _csv_from(pre))])
+
+    assert _import(repo, zip_path, sha256_hex(zip_path), "1d") == 4
+    assert "DATA ERROR [1d]: download gap at 2023-12-31" in capsys.readouterr().err
+    assert path.read_bytes() == before
+    assert len(api) == 10
+
+
+@pytest.mark.parametrize(
+    "markets",
+    [
+        {"BTC/EUR": {"precision": {"price": 0}}},
+        {"BTC/EUR": {"precision": {"price": float("nan")}}},
+        {"BTC/EUR": {"precision": {}}},
+    ],
+)
+def test_merge_with_bad_tick_refused(repo, clock, capsys, exchange, markets) -> None:
+    zip_path = standard_zip(repo)
+    assert _import(repo, zip_path, sha256_hex(zip_path), "1d") == cli.EXIT_OK
+    path = _cache(repo, "1d")
+    before = path.read_bytes()
+    exchange.markets = markets
+
+    assert _import(repo, zip_path, sha256_hex(zip_path), "1d") == 4
+    assert "DATA ERROR [1d]:" in capsys.readouterr().err
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("tick", [0, -1.0, float("nan"), None])
+def test_import_archive_refuses_bad_tick_when_merging(repo, tick) -> None:
+    zip_path = standard_zip(repo)
+    sha = sha256_hex(zip_path)
+    import_archive(_settings(repo), zip_path, sha, ["1d"], tick_provider=_tick, now=NOW)
+    before = _cache(repo, "1d").read_bytes()
+    with pytest.raises(ArchiveError, match="invalid price tick"):
+        import_archive(_settings(repo), zip_path, sha, ["1d"], tick_provider=lambda: tick, now=NOW)
+    assert _cache(repo, "1d").read_bytes() == before
+
+
+def test_tick_provider_called_once_across_timeframes(repo) -> None:
+    zip_path = standard_zip(repo)
+    sha = sha256_hex(zip_path)
+    import_archive(_settings(repo), zip_path, sha, ALL_TFS, tick_provider=_tick, now=NOW)
+    calls: list[int] = []
+
+    def _counting() -> float:
+        calls.append(1)
+        return TICK
+
+    import_archive(_settings(repo), zip_path, sha, ALL_TFS, tick_provider=_counting, now=NOW)
+    assert calls == [1]
+
+
+@pytest.mark.parametrize(
+    ("sha", "expected"), [("abc", "malformed --sha256"), ("0" * 64, "checksum mismatch")]
+)
+def test_checksum_errors_reported_even_offline(repo, clock, capsys, exchange, sha, expected):
+    """The tick is lazy: an offline load_markets never masks the real cause."""
+    exchange.markets = ccxt.NetworkError("offline")
+    zip_path = standard_zip(repo)
+    assert _import(repo, zip_path, sha, "1d") == 4
+    err = capsys.readouterr().err
+    assert expected in err and "load_markets" not in err
+    assert exchange.load_markets_calls == 0
+
+
+def test_first_import_never_calls_load_markets(repo, clock, exchange) -> None:
+    exchange.markets = ccxt.NetworkError("offline")
+    zip_path = standard_zip(repo)
+    assert _import(repo, zip_path, sha256_hex(zip_path)) == cli.EXIT_OK
+    assert exchange.load_markets_calls == 0
+    assert not _no_caches(repo)
+
+
+def test_merge_into_defective_cache_refused(repo, clock, capsys) -> None:
+    path = _cache(repo, "1d")
+    write_cache(path, rows([0, 1, 3], ["api"] * 3))  # download gap in the cache
+    before = path.read_bytes()
+    zip_path = standard_zip(repo)
+
+    assert _import(repo, zip_path, sha256_hex(zip_path), "1d") == 4
+    assert "DATA ERROR [1d]: download gap" in capsys.readouterr().err
+    assert path.read_bytes() == before

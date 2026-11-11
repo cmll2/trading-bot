@@ -17,7 +17,7 @@ from bot.data.fetch import FetchError
 from bot.data.update import update_timeframe
 from bot.data.validate import DataValidationError
 from tests.conftest import REPO_ROOT
-from tests.data.fakes import DAY_MS, START, START_MS, FakeExchange, candles, frame
+from tests.data.fakes import DAY_MS, START, START_MS, FakeExchange, candles, frame, rows
 
 
 @pytest.fixture
@@ -169,4 +169,64 @@ def test_cache_with_unfilled_no_trade_gap_is_refused_before_fetching(settings: S
     with pytest.raises(DataValidationError) as info:
         update_timeframe(settings, ex, _clock(6), "1d")
     assert info.value.defect == "no-trade gap not filled"
+    assert ex.calls == [] and path.read_bytes() == before
+
+
+# --- story 4: overlap-checked merge ----------------------------------------------------------
+
+
+def test_update_on_archive_cache_requests_after_last_and_merges(
+    settings: Settings, monkeypatch
+) -> None:
+    """AC3: still only candles after the last cached open_at, combined via merge_candles; the
+    frame handed to apply_no_trade_policy is sorted, unique and normalized."""
+    import bot.data.update as update_mod
+
+    path = _path(settings)
+    write_cache(path, rows(list(range(5)), ["archive"] * 5))
+    merges: list[tuple[pd.DataFrame, pd.DataFrame, float]] = []
+    applied: list[pd.DataFrame] = []
+    real_merge, real_apply = update_mod.merge_candles, update_mod.apply_no_trade_policy
+
+    def _merge(existing, incoming, tick, *a, **k):
+        merges.append((existing, incoming, tick))
+        return real_merge(existing, incoming, tick, *a, **k)
+
+    def _apply(df: pd.DataFrame, tf: str, policy: str) -> pd.DataFrame:
+        applied.append(df)
+        return real_apply(df, tf, policy)
+
+    monkeypatch.setattr(update_mod, "merge_candles", _merge)
+    monkeypatch.setattr(update_mod, "apply_no_trade_policy", _apply)
+    ex = FakeExchange([candles(START_MS, 8)])  # Kraken returns its window, overlap included
+
+    out = update_timeframe(settings, ex, _clock(8), "1d")
+
+    assert ex.calls[0]["since"] == START_MS + 5 * DAY_MS
+    assert len(merges) == 1 and merges[0][2] == 0.1
+    assert merges[0][1]["open_at"].min() == pd.Timestamp(START_MS + 5 * DAY_MS, unit="ms", tz="UTC")
+    df = applied[0]
+    assert df["open_at"].is_unique and df["open_at"].is_monotonic_increasing
+    assert list(df.index) == list(range(len(df)))
+    assert out["source"].tolist() == ["archive"] * 5 + ["api"] * 3
+    stored = read_cache(path)
+    assert stored is not None and stored["open_at"].is_unique and len(stored) == 8
+
+
+def test_update_returns_overlap_stats(settings: Settings) -> None:
+    from bot.data.update import update_timeframe_with_stats
+
+    _, stats = update_timeframe_with_stats(
+        settings, FakeExchange([candles(START_MS, 5)]), _clock(5), "1d"
+    )
+    assert stats.rows_compared == 0  # update never re-requests cached candles
+
+
+def test_update_with_bad_tick_refuses_before_fetching(settings: Settings) -> None:
+    path = _path(settings)
+    write_cache(path, frame(5))
+    before = path.read_bytes()
+    ex = FakeExchange([candles(START_MS, 8)], markets={"BTC/EUR": {"precision": {"price": 0}}})
+    with pytest.raises(FetchError, match="invalid price tick"):
+        update_timeframe(settings, ex, _clock(8), "1d")
     assert ex.calls == [] and path.read_bytes() == before

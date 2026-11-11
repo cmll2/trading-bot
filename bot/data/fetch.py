@@ -44,6 +44,29 @@ def make_public_exchange() -> ccxt.kraken:
     return ccxt.kraken({"enableRateLimit": True})
 
 
+def price_tick(exchange: Any, symbol: str) -> float:
+    """The market's price tick from exchange metadata (CON-03: never hardcoded).
+
+    Calls ``exchange.load_markets()`` and reads ``market["precision"]["price"]``, which is a
+    tick size only in ccxt's TICK_SIZE precision mode (Kraken's). Anything else, or a tick
+    that is not a positive finite number, is refused with ``FetchError``.
+    """
+    mode = getattr(exchange, "precisionMode", None)
+    if mode != ccxt.TICK_SIZE:
+        raise FetchError(f"exchange precision mode {mode!r} is not TICK_SIZE; tick unknown")
+    try:
+        markets = exchange.load_markets()
+    except ccxt.BaseError as exc:
+        raise FetchError(f"load_markets failed: {type(exc).__name__}: {exc}") from exc
+    try:
+        tick = markets[symbol]["precision"]["price"]
+    except (KeyError, TypeError) as exc:
+        raise FetchError(f"no price precision for {symbol} in market metadata") from exc
+    if not _is_number(tick) or tick <= 0:
+        raise FetchError(f"invalid price tick for {symbol} in market metadata: {tick!r}")
+    return float(tick)
+
+
 def _ts(ms: int | None) -> object:
     return None if ms is None else pd.Timestamp(ms, unit="ms", tz="UTC")
 

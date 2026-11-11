@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,15 @@ def test_repo_config_data_section() -> None:
     assert s.data.timeframes == ("1d", "4h", "15m")
     assert s.data.fetch_max_retries == 5
     assert s.data.fetch_retry_base_seconds == 2.0
+    assert s.data.overlap_price_tolerance_ticks == 1
+    assert s.data.overlap_volume_tolerance_fraction == Decimal("0.01")
+
+
+def test_overlap_tolerances_are_above_protected_block() -> None:
+    text = (REPO_ROOT / "config.yaml").read_text(encoding="utf-8")
+    protected = text.index("# PROTECTED")
+    for key in ("overlap_price_tolerance_ticks:", "overlap_volume_tolerance_fraction:"):
+        assert text.index(key) < protected
 
 
 def test_data_section_is_above_protected_block() -> None:
@@ -71,6 +81,15 @@ def test_missing_data_section_is_refused(repo: Path) -> None:
         {"fetch_retry_base_seconds": float("nan")},
         {"fetch_retry_base_seconds": 301},
         {"fetch_max_retries": None},
+        {"overlap_price_tolerance_ticks": -1},
+        {"overlap_price_tolerance_ticks": 1.5},
+        {"overlap_price_tolerance_ticks": "1"},
+        {"overlap_price_tolerance_ticks": True},
+        {"overlap_price_tolerance_ticks": None},
+        {"overlap_volume_tolerance_fraction": "-0.01"},
+        {"overlap_volume_tolerance_fraction": "1"},
+        {"overlap_volume_tolerance_fraction": "NaN"},
+        {"overlap_volume_tolerance_fraction": None},
         {"unknown_key": 1},
     ],
 )

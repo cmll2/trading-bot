@@ -103,6 +103,9 @@ class DataSettings(_Frozen):
     # Kraken's archive omits no-trade intervals: fill them flat (synthetic rows) or fail.
     no_trade_policy: Literal["fill_flat", "fail"]
     max_synthetic_ratio: Decimal = Field(ge=0, lt=1, allow_inf_nan=False)
+    # A-3: archive and API rows for the same open_at must agree within these tolerances.
+    overlap_price_tolerance_ticks: int = Field(ge=0, strict=True)
+    overlap_volume_tolerance_fraction: Decimal = Field(ge=0, lt=1, allow_inf_nan=False)
 
     @field_validator("timeframes")
     @classmethod

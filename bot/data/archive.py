@@ -12,8 +12,9 @@ is untrusted input:
   than ``MAX_MEMBER_BYTES`` (declared or actually decompressed) are refused;
 - timestamps must be integral Unix seconds within [2013-01-01, 2100-01-01) (unit guard).
 
-Per timeframe (all-or-nothing): read -> ``apply_no_trade_policy`` -> ``validate_frame`` ->
-``write_cache``. A timeframe that fails writes nothing; timeframes already written stay.
+Per timeframe (all-or-nothing): read -> merge into the existing cache with the
+overlap-checked ``merge_candles`` (story 4) -> ``apply_no_trade_policy`` -> ``validate_frame``
+-> ``write_cache``. A timeframe that fails writes nothing; timeframes already written stay.
 The Kraken pair code and interval mapping live only in this module.
 """
 
@@ -33,6 +34,8 @@ import pandas as pd
 
 from bot.config import Settings
 from bot.data.cache import cache_path, normalize, write_cache
+from bot.data.fetch import FetchError
+from bot.data.merge import OverlapStats, check_tick, merge_candles
 from bot.data.validate import (
     DataValidationError,
     apply_no_trade_policy,
@@ -194,10 +197,14 @@ def read_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo, tf: str) -> pd.DataF
     return normalize(frame.sort_values("open_at", kind="stable"))
 
 
-def _refuse_existing_cache(path: Path, tf: str) -> None:
+def _existing_cache(path: Path, tf: str, settings: Settings) -> pd.DataFrame | None:
+    """The cache to merge into, validated first (never build on a defective cache); None
+    when absent or empty (an empty cache file is simply replaced)."""
     cached = read_cache_checked(path)
-    if cached is not None and not cached.empty:
-        raise ArchiveError(f"cache exists; merge arrives in story 4 ({path})", timeframe=tf)
+    if cached is None or cached.empty:
+        return None
+    validate_frame(cached, tf, settings.data)
+    return cached
 
 
 def import_archive(
@@ -205,13 +212,21 @@ def import_archive(
     zip_path: Path,
     expected_sha256: str,
     timeframes: Iterable[str],
+    *,
+    tick_provider: Callable[[], float],
     now: datetime | None = None,
-    on_written: Callable[[str, pd.DataFrame], None] | None = None,
+    on_written: Callable[[str, pd.DataFrame, OverlapStats], None] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Verify the checksum, then import each timeframe into its cache, in order.
 
-    Stops at the first failing timeframe (raising ``ArchiveError`` with ``timeframe`` set);
-    caches written for earlier timeframes stay. ``on_written`` is called after each write.
+    An existing non-empty cache is merged with the archive rows through ``merge_candles``
+    (tick from ``tick_provider``, exchange market metadata, called only after the checksum
+    and only when a non-empty cache must be merged, at most once; tolerances from ``data:``);
+    any overlap
+    disagreement refuses the timeframe and leaves its cache untouched. Stops at the first
+    failing timeframe (raising ``ArchiveError`` with ``timeframe`` set); caches written for
+    earlier timeframes stay. ``on_written(tf, frame, overlap_stats)`` is called after each
+    write.
     """
     pair = settings.pairs[0]
     tfs = list(dict.fromkeys(timeframes))
@@ -219,6 +234,7 @@ def import_archive(
     _check_sha256_format(expected_sha256)  # before opening or hashing anything
 
     written: dict[str, pd.DataFrame] = {}
+    tick: float | None = None
     try:
         fh = zip_path.open("rb")
     except OSError as exc:
@@ -236,14 +252,24 @@ def import_archive(
             for tf in tfs:
                 path = cache_path(settings.paths.var_dir, pair, tf)
                 try:
-                    _refuse_existing_cache(path, tf)
-                    frame = read_member(zf, find_member(zf, names[tf]), tf)
+                    cached = _existing_cache(path, tf, settings)
+                    incoming = read_member(zf, find_member(zf, names[tf]), tf)
+                    if cached is not None and tick is None:
+                        tick = check_tick(tick_provider())  # lazy: network only if merging
+                    frame, stats = merge_candles(
+                        cached,
+                        incoming,
+                        1.0 if tick is None else tick,  # no overlap possible without a cache
+                        settings.data.overlap_price_tolerance_ticks,
+                        settings.data.overlap_volume_tolerance_fraction,
+                        tf=tf,
+                    )
                     frame = apply_no_trade_policy(frame, tf, settings.data.no_trade_policy)
                     validate_frame(frame, tf, settings.data, now=now)
                     write_cache(path, frame)
-                except (ArchiveError, DataValidationError, OSError) as exc:
+                except (ArchiveError, DataValidationError, FetchError, OSError) as exc:
                     raise ArchiveError(str(exc), timeframe=tf) from exc
                 written[tf] = frame
                 if on_written is not None:
-                    on_written(tf, frame)
+                    on_written(tf, frame, stats)
     return written

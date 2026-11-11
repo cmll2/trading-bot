@@ -6,7 +6,9 @@ configuration and the strategy/mode combination, then exit with "not implemented
 M1 adds ``bot data update`` and ``bot data validate`` (AD-18): public, unauthenticated
 candle download into the local Parquet cache, and its validation. M1 story 3 adds
 ``bot data import-archive --zip PATH --sha256 HEX`` (Kraken OHLCVT archive, checksum first).
-Data errors exit with ``EXIT_DATA_ERROR``.
+M1 story 4: both writers merge through the overlap-checked ``merge_candles`` (tick from the
+public exchange's market metadata) and print the overlap statistics. Data errors exit with
+``EXIT_DATA_ERROR``.
 
 ``live`` requires BOTH the ``--live`` flag AND ``TRADING_BOT_LIVE=I_ACCEPT_REAL_ORDERS`` in
 the process environment (never from .env), plus a strategy allowed in live. Only
@@ -36,9 +38,10 @@ from bot.config import (
     load_settings,
 )
 from bot.data.archive import ArchiveError, import_archive
-from bot.data.cache import cache_path
-from bot.data.fetch import FetchError, make_public_exchange
-from bot.data.update import update_timeframe
+from bot.data.cache import SOURCES, cache_path
+from bot.data.fetch import FetchError, make_public_exchange, price_tick
+from bot.data.merge import OverlapStats
+from bot.data.update import update_timeframe_with_stats
 from bot.data.validate import DataValidationError, read_cache_checked, validate_frame
 from bot.strategy.base import Mode
 from bot.strategy.registry import StrategyNotAllowed, strategy_class_for
@@ -145,6 +148,14 @@ def _data_error(tf: str, exc: FetchError | DataValidationError) -> None:
     _err(f"DATA ERROR [{tf}]: {exc.defect}{where}")
 
 
+def _print_overlap(tf: str, stats: OverlapStats) -> None:
+    print(
+        f"{tf}: overlap rows_compared={stats.rows_compared} "
+        f"max_price_diff_ticks={stats.max_price_diff_ticks:.6g} "
+        f"max_volume_diff_fraction={stats.max_volume_diff_fraction:.6g}"
+    )
+
+
 def _data_command(args: argparse.Namespace) -> int:
     try:
         settings = load_settings(args.config, args.env_file)
@@ -158,9 +169,10 @@ def _data_command(args: argparse.Namespace) -> int:
     exchange = _exchange_factory() if args.data_command == "update" else None
     failed = False
     for tf in timeframes:
+        stats: OverlapStats | None = None
         try:
             if args.data_command == "update":
-                frame = update_timeframe(settings, exchange, clock, tf)
+                frame, stats = update_timeframe_with_stats(settings, exchange, clock, tf)
                 report = validate_frame(frame, tf, settings.data)
             else:
                 path = cache_path(settings.paths.var_dir, settings.pairs[0], tf)
@@ -186,22 +198,35 @@ def _data_command(args: argparse.Namespace) -> int:
         )
         if report.synthetic_by_year:
             print(f"{tf}: synthetic_by_year={report.synthetic_by_year}")
+        if stats is not None:
+            _print_overlap(tf, stats)
     return EXIT_DATA_ERROR if failed else EXIT_OK
 
 
 def _import_archive_command(
     args: argparse.Namespace, settings: Settings, timeframes: list[str], clock: Clock
 ) -> int:
-    def _written(tf: str, frame: pd.DataFrame) -> None:
-        synthetic = int((frame["source"] == "synthetic").sum())
+    def _written(tf: str, frame: pd.DataFrame, stats: OverlapStats) -> None:
+        counts = frame["source"].value_counts()
+        sources = {s: int(counts.get(s, 0)) for s in SOURCES}
         print(
             f"{tf}: rows={len(frame)} first={frame['open_at'].iloc[0]} "
-            f"last={frame['open_at'].iloc[-1]} source=archive synthetic={synthetic}"
+            f"last={frame['open_at'].iloc[-1]} sources={sources} "
+            f"synthetic={sources['synthetic']}"
         )
+        _print_overlap(tf, stats)
 
+    pair = settings.pairs[0]
     try:
         import_archive(
-            settings, args.zip, args.sha256, timeframes, now=clock.now(), on_written=_written
+            settings,
+            args.zip,
+            args.sha256,
+            timeframes,
+            # Tick from public market metadata (CON-03), fetched only to merge into a cache.
+            tick_provider=lambda: price_tick(_exchange_factory(), pair),
+            now=clock.now(),
+            on_written=_written,
         )
     except ArchiveError as exc:
         where = f" [{exc.timeframe}]" if exc.timeframe else ""

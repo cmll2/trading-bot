@@ -16,8 +16,9 @@ from bot.data.fetch import (
     FetchError,
     fetch_closed_candles,
     make_public_exchange,
+    price_tick,
 )
-from tests.data.fakes import DAY_MS, START, START_MS, FakeExchange, candle, candles
+from tests.data.fakes import DAY_MS, START, START_MS, TICK, FakeExchange, candle, candles
 
 H4_MS = 4 * 3600 * 1000
 
@@ -190,3 +191,49 @@ def test_public_exchange_is_unauthenticated() -> None:
     assert isinstance(ex, ccxt.kraken)
     assert ex.enableRateLimit is True
     assert not ex.apiKey and not ex.secret
+
+
+# --- price tick (story 4, CON-03) ------------------------------------------------------------
+
+
+def test_price_tick_from_market_metadata() -> None:
+    ex = FakeExchange(markets={"BTC/EUR": {"precision": {"price": 0.5}}})
+    assert price_tick(ex, "BTC/EUR") == 0.5
+    assert ex.load_markets_calls == 1
+    assert price_tick(FakeExchange(), "BTC/EUR") == TICK
+
+
+def test_real_kraken_client_uses_tick_size_precision_mode() -> None:
+    assert make_public_exchange().precisionMode == ccxt.TICK_SIZE  # no network: attribute only
+
+
+@pytest.mark.parametrize(
+    "markets",
+    [
+        {"BTC/EUR": {"precision": {"price": 0}}},
+        {"BTC/EUR": {"precision": {"price": -0.1}}},
+        {"BTC/EUR": {"precision": {"price": float("nan")}}},
+        {"BTC/EUR": {"precision": {"price": float("inf")}}},
+        {"BTC/EUR": {"precision": {"price": None}}},
+        {"BTC/EUR": {"precision": {"price": "0.1"}}},
+        {"BTC/EUR": {"precision": {"price": True}}},
+        {"BTC/EUR": {"precision": {}}},
+        {"BTC/EUR": {}},
+        {"ETH/EUR": {"precision": {"price": 0.01}}},
+    ],
+)
+def test_bad_or_missing_tick_is_refused(markets: object) -> None:
+    with pytest.raises(FetchError, match="tick|precision"):
+        price_tick(FakeExchange(markets=markets), "BTC/EUR")
+
+
+def test_non_tick_size_precision_mode_is_refused() -> None:
+    ex = FakeExchange(precisionMode=ccxt.DECIMAL_PLACES)
+    with pytest.raises(FetchError, match="not TICK_SIZE"):
+        price_tick(ex, "BTC/EUR")
+    assert ex.load_markets_calls == 0
+
+
+def test_load_markets_failure_is_a_fetch_error() -> None:
+    with pytest.raises(FetchError, match="load_markets failed: NetworkError"):
+        price_tick(FakeExchange(markets=ccxt.NetworkError("down")), "BTC/EUR")

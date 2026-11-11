@@ -428,3 +428,20 @@ def test_archive_gap_filled_by_writer_then_validates(repo, wire, capsys) -> None
     assert "synthetic=1" in out and "synthetic_ratio_from_2017-01-01=0.000666" in out
     assert "synthetic_by_year={2025: 1}" in out
     assert _sha256(path) == before  # validate never rewrites
+
+
+def test_update_prints_overlap_stats(repo, wire, capsys) -> None:
+    """Story 4: update combines through merge_candles and prints the overlap statistics."""
+    wire(FakeExchange([candles(START_MS, 5)]), FakeClock(START + timedelta(days=5, hours=1)))
+    assert cli.main(["data", *_args(repo, "update", "--timeframe", "1d")], env={}) == 0
+    out = capsys.readouterr().out
+    assert "1d: overlap rows_compared=0 max_price_diff_ticks=0 max_volume_diff_fraction=0" in out
+
+
+def test_update_bad_tick_exits_4_and_writes_nothing(repo, wire, capsys) -> None:
+    ex = FakeExchange([candles(START_MS, 5)], markets={"BTC/EUR": {"precision": {"price": 0}}})
+    wire(ex, FakeClock(START + timedelta(days=5, hours=1)))
+    code = cli.main(["data", *_args(repo, "update", "--timeframe", "1d")], env={})
+    assert code == 4
+    assert "DATA ERROR [1d]: invalid price tick" in capsys.readouterr().err
+    assert not _cache(repo).exists() and ex.calls == []

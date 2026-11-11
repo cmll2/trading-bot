@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
+import ccxt
 import numpy as np
 import pandas as pd
 
@@ -14,6 +15,8 @@ from bot.config import DataSettings
 from bot.data.cache import normalize
 
 DAY_MS = 86_400_000
+# Price tick served by FakeExchange.load_markets (Kraken's BTC/EUR tick at the time of writing).
+TICK = 0.1
 START = datetime(2024, 1, 1, tzinfo=UTC)
 START_MS = int(START.timestamp() * 1000)
 
@@ -25,6 +28,8 @@ DATA = DataSettings(
     history_start=date(2017, 1, 1),
     no_trade_policy="fill_flat",
     max_synthetic_ratio=Decimal("0.001"),
+    overlap_price_tolerance_ticks=1,
+    overlap_volume_tolerance_fraction=Decimal("0.01"),
 )
 
 
@@ -42,10 +47,22 @@ def candles(start_ms: int, n: int, step_ms: int = DAY_MS) -> list[list[float | i
 @dataclass
 class FakeExchange:
     """Scripted ``fetch_ohlcv``: each call pops the next page (a list) or raises the next
-    exception. When the script is exhausted it returns an empty page."""
+    exception. When the script is exhausted it returns an empty page.
+
+    ``load_markets`` serves ``markets`` (or raises it if it is an exception); ccxt's
+    TICK_SIZE precision mode, as for Kraken."""
 
     script: list[Any] = field(default_factory=list)
     calls: list[dict[str, Any]] = field(default_factory=list)
+    markets: Any = field(default_factory=lambda: {"BTC/EUR": {"precision": {"price": TICK}}})
+    precisionMode: int = ccxt.TICK_SIZE  # noqa: N815 (ccxt attribute name)
+    load_markets_calls: int = 0
+
+    def load_markets(self, reload: bool = False) -> Any:
+        self.load_markets_calls += 1
+        if isinstance(self.markets, BaseException):
+            raise self.markets
+        return self.markets
 
     def fetch_ohlcv(
         self,
