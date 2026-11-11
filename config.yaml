@@ -1,0 +1,62 @@
+# trading-bot configuration. Loaded once, read-only, by bot/config.py into a frozen Settings.
+# Exchange minimums, precision and fee rates are NOT set here: they are read from the
+# exchange at startup (CON-03). Secrets are NOT here: .env holds only the path to a
+# secrets file outside the repository (SAF-01).
+
+exchange:
+  name: kraken
+
+# ccxt unified symbols; a list, and v1 validation requires exactly one entry.
+pairs:
+  - BTC/EUR
+
+fiat_currencies:
+  - EUR
+
+strategy:
+  id: v0_trend
+  timeframe: 1d
+
+capital:
+  allocated_quote: "20"   # EUR the bot may use live (AD-26)
+
+paper:
+  initial_quote: "20"     # EUR seed of the dry-run virtual account
+
+# Post-only limit at best bid/ask, re-priced within a window, then cancel & skip (AD-5).
+execution:
+  approval: manual                  # manual | autonomous (AD-16)
+  window_hours: 6                   # after the daily close (00:00 UTC)
+  reprice_interval_minutes: 30
+  max_submissions_per_intent: 12    # per-intent cap; daily hard cap is in risk:
+
+slippage_bps: 5                     # configurable slippage assumption (CON-04)
+
+backtest:
+  # Fixed holdout window (UTC, inclusive), frozen; never moves (FR-15, FR-16).
+  holdout_start: 2025-11-11
+  holdout_end: 2026-11-10
+
+review:
+  # GL-02 tolerances.
+  gl02_max_fill_price_diff_fraction: "0.005"   # each paper fill within 0.5% of backtest price
+  gl02_max_equity_diff_pp: "2"                 # 4-week equity within 2 percentage points
+
+paths:
+  var_dir: var
+
+# ---------------------------------------------------------------------------------------
+# PROTECTED (SAF-04): change only on the operator's explicit request, in a commit that
+# touches nothing else. Loaded read-only into bot.risk.limits.RiskLimits (frozen, SAF-05).
+# ---------------------------------------------------------------------------------------
+risk:
+  max_position_fraction: "1.00"          # 100% of equity
+  max_position_abs_quote: "25"           # and at most EUR 25
+  max_order_intents_per_day: 4           # new order intents per UTC day
+  max_exchange_submissions_per_day: 24   # exchange submissions per UTC day, re-prices included
+  max_daily_loss_fraction: "0.10"        # halt, manual reset
+  max_total_drawdown_fraction: "0.25"    # from the start baseline; halt, manual reset
+  stale_candle_intervals: 2
+  stale_ticker_seconds: 120
+  price_sanity_fraction: "0.02"
+  kill_switch_path: var/KILL             # resolved against this file's directory
