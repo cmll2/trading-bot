@@ -35,10 +35,24 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Vendored agent tooling, not project code.
+extend-exclude = [".agents", ".claude", "_bmad"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "S", "SIM"]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "TID"]
 ignore = ["S101"]  # assert is fine in tests
+
+# AD-2: only bot/clock.py may read wall-clock time.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"datetime.datetime.now".msg = "use the Clock port (bot/clock.py), AD-2"
+"datetime.datetime.utcnow".msg = "use the Clock port (bot/clock.py), AD-2"
+"datetime.date.today".msg = "use the Clock port (bot/clock.py), AD-2"
+"time.time".msg = "use the Clock port (bot/clock.py), AD-2"
+"time.time_ns".msg = "use the Clock port (bot/clock.py), AD-2"
+"time.sleep".msg = "use the Clock port (bot/clock.py), AD-2"
+
+[tool.ruff.lint.per-file-ignores]
+"bot/clock.py" = ["TID251"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
