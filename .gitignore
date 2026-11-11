@@ -17,9 +17,9 @@ build/
 !**/test_*secret*.py
 
 # Runtime state, data, logs
-data/
-var/
-logs/
+/data/
+/var/
+/logs/
 *.sqlite
 *.sqlite3
 *.db
