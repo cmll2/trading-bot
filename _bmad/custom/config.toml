@@ -1,0 +1,3 @@
+[core]
+# Ticket store and BMAD outputs live under docs/stories (operator instruction, 2026-11-11)
+output_folder = "{project-root}/docs/stories"
