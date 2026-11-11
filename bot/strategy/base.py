@@ -9,6 +9,8 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Literal, Protocol
 
+from bot.candles import CandleHistory
+
 Mode = Literal["backtest", "dry-run", "live"]
 MODES: frozenset[Mode] = frozenset({"backtest", "dry-run", "live"})
 
@@ -21,6 +23,6 @@ class Strategy(Protocol):
     warmup: int
     allowed_modes: frozenset[Mode]
 
-    def on_candle(self, history: object) -> TargetPosition: ...
+    def on_candle(self, history: CandleHistory) -> TargetPosition: ...
 
-    def indicators(self, history: object) -> dict[str, float]: ...
+    def indicators(self, history: CandleHistory) -> dict[str, float]: ...

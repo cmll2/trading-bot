@@ -139,6 +139,25 @@ def test_validate_ok_prints_range(repo, wire, capsys) -> None:
     assert "'api': 5" in out
 
 
+def test_validate_prints_identical_data_hash_on_unchanged_cache(repo, wire, capsys) -> None:
+    """Story 5 AC2: two runs over an unchanged cache print the same data hash."""
+    write_cache(_cache(repo), frame(5))
+    wire(FakeExchange(), FakeClock(START + timedelta(days=6)))
+    hashes = []
+    for _ in range(2):
+        assert cli.main(["data", *_args(repo, "validate", "--timeframe", "1d")], env={}) == 0
+        lines = [ln for ln in capsys.readouterr().out.splitlines() if "data_hash=" in ln]
+        assert len(lines) == 1 and lines[0].startswith("1d: data_hash=")
+        hashes.append(lines[0].split("=", 1)[1])
+    assert hashes[0] == hashes[1] and len(hashes[0]) == 64
+
+    changed = frame(5)
+    changed.loc[2, "close"] = changed.loc[2, "close"] + 0.1
+    write_cache(_cache(repo), changed)
+    assert cli.main(["data", *_args(repo, "validate", "--timeframe", "1d")], env={}) == 0
+    assert f"data_hash={hashes[0]}" not in capsys.readouterr().out
+
+
 def test_validate_missing_cache(repo, wire, capsys) -> None:
     wire(FakeExchange(), FakeClock(START))
     code = cli.main(["data", *_args(repo, "validate", "--timeframe", "4h")], env={})

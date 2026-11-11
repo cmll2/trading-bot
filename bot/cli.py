@@ -8,7 +8,8 @@ candle download into the local Parquet cache, and its validation. M1 story 3 add
 ``bot data import-archive --zip PATH --sha256 HEX`` (Kraken OHLCVT archive, checksum first).
 M1 story 4: both writers merge through the overlap-checked ``merge_candles`` (tick from the
 public exchange's market metadata) and print the overlap statistics. Data errors exit with
-``EXIT_DATA_ERROR``.
+``EXIT_DATA_ERROR``. M1 story 5: ``bot data validate`` also prints each file's ``data_hash``
+(NFR-02, AD-21).
 
 ``live`` requires BOTH the ``--live`` flag AND ``TRADING_BOT_LIVE=I_ACCEPT_REAL_ORDERS`` in
 the process environment (never from .env), plus a strategy allowed in live. Only
@@ -38,7 +39,7 @@ from bot.config import (
     load_settings,
 )
 from bot.data.archive import ArchiveError, import_archive
-from bot.data.cache import SOURCES, cache_path
+from bot.data.cache import SOURCES, cache_path, data_hash
 from bot.data.fetch import FetchError, make_public_exchange, price_tick
 from bot.data.merge import OverlapStats
 from bot.data.update import update_timeframe_with_stats
@@ -200,6 +201,8 @@ def _data_command(args: argparse.Namespace) -> int:
             print(f"{tf}: synthetic_by_year={report.synthetic_by_year}")
         if stats is not None:
             _print_overlap(tf, stats)
+        if args.data_command == "validate":
+            print(f"{tf}: data_hash={data_hash(frame)}")
     return EXIT_DATA_ERROR if failed else EXIT_OK
 
 

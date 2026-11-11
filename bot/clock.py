@@ -7,7 +7,8 @@ everywhere else. Adapters:
   Kraken's public server time at startup and hourly, refuse to trade beyond 5 s) is added
   at M3 when the engine first trades; M1 data download does not need it.
 - ``FakeClock``: deterministic clock for tests; ``sleep_until`` never blocks.
-- ``SimClock``: backtest clock (M2).
+- ``SimClock``: backtest clock. The backtester moves it forward to each tick with
+  ``advance_to``; it never moves backwards and ``sleep_until`` never blocks.
 """
 
 from __future__ import annotations
@@ -63,3 +64,22 @@ class FakeClock:
     def sleep_until(self, t: datetime) -> None:
         self.sleep_calls.append(_require_utc(t))
         self._now = max(self._now, t)
+
+
+class SimClock:
+    """Backtest clock (AD-1, AD-2): time moves only forward, through ``advance_to`` or
+    ``sleep_until``. Moving it backwards raises ``ValueError``."""
+
+    def __init__(self, start: datetime) -> None:
+        self._now = _require_utc(start)
+
+    def now(self) -> datetime:
+        return self._now
+
+    def advance_to(self, t: datetime) -> None:
+        if _require_utc(t) < self._now:
+            raise ValueError(f"SimClock cannot move backwards: {t} < {self._now}")
+        self._now = t
+
+    def sleep_until(self, t: datetime) -> None:
+        self.advance_to(max(self._now, _require_utc(t)))
