@@ -4,8 +4,8 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 
 ## Status
 
-- **Current phase:** Pre-M0 — planning (BMAD full track, brief §14).
-- **Blocked on:** build-vs-reuse decision (brief §13) — no custom build starts before it.
+- **Current phase:** M0 Scaffold built on branch `m0-scaffold`; awaiting independent audit and operator review (brief §8, §9).
+- **Blocked on:** operator review of M0 before M1 starts.
 
 ## Done
 
@@ -13,11 +13,12 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 
 - 2026-11-11 — PRD written: `docs/planning/prd.md` (CON/SAF/GL verbatim from brief, FR-01–66, NFR-01–10, OD-01–19). Gaps found: pair needed at M1 not M2; kill switch/halts don't address open orders/positions; withdrawal check unenforceable if API can't report permissions; €20 with €5 min can leave unsellable dust; GL-02 tolerance undefined; Streamlit binds 0.0.0.0 by default (must set `server.address=127.0.0.1`).
 
+- 2026-11-11 — **M0 Scaffold built** (branch `m0-scaffold`, not merged). Package skeleton per brief §5 with stubs citing AD-/FR- IDs; Broker/Clock/Strategy/MarketData ports; frozen pydantic `Settings` from `config.yaml` + `.env` (`.env` = secrets-file path only, refused inside the repo; unknown keys and a live-gate value in `.env` refused; secrets file never opened); protected `risk:` section → frozen `RiskLimits`; `bot backtest|dry-run|live` stubs, live double gate (`--live` + `TRADING_BOT_LIVE=I_ACCEPT_REAL_ORDERS`) and still refusing in M0; plumbing excluded from live; autouse network block in `tests/conftest.py`; ruff TID251 bans wall-clock APIs outside `bot/clock.py`. Check `uv run ruff check . && uv run ruff format --check . && uv run pytest` passed: 93 tests (also via `scripts/check.ps1` and `scripts/check.sh`). No dependency added. Known limits: everything beyond config/CLI gates is a stub; fees not in config (decide at M2); `.streamlit/config.toml` deferred to M4; independent audit not yet run.
+
 ## Next
 
-1. Present build-vs-reuse recommendation + all §13 open decisions to the user in one batch.
-2. UX spec for dashboard (§7), architecture (broker interface + state store first), epics M0–M6 → stories.
-3. M0 scaffold. Stop for review at end of each milestone with an independent audit report (§8).
+1. Independent M0 audit (fresh reviewer runs the check, reads git history), then operator review of M0.
+2. After approval: merge `m0-scaffold`, start M1 Data.
 
 ## Decisions log
 
