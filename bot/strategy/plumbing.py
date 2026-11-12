@@ -7,6 +7,7 @@ dashboard. It must be impossible to run in live: it is absent from
 
 from __future__ import annotations
 
+from bot.candles import CandleHistory
 from bot.strategy.base import Mode, TargetPosition
 
 
@@ -16,8 +17,8 @@ class Plumbing:
     warmup = 0
     allowed_modes: frozenset[Mode] = frozenset({"backtest", "dry-run"})
 
-    def on_candle(self, history: object) -> TargetPosition:
+    def on_candle(self, history: CandleHistory) -> TargetPosition:
         raise NotImplementedError("plumbing is implemented at M3 (FR-09)")
 
-    def indicators(self, history: object) -> dict[str, float]:
+    def indicators(self, history: CandleHistory) -> dict[str, float]:
         raise NotImplementedError("plumbing is implemented at M3 (FR-09)")
