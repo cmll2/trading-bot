@@ -4,8 +4,8 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 
 ## Status
 
-- **Current phase:** M1 Data (branch `m1-data`).
-- **Blocked on:** nothing.
+- **Current phase:** M1 Data built (branch `m1-data`); independent M1 audit and operator review pending.
+- **Blocked on:** operator download + import of the full Kraken OHLCVT archive (~10 GB) for "several years" of history — see `docs/data-manifest.md`. Story 6 ticket marked `blocked`.
 
 ## Done
 
@@ -17,9 +17,22 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 
 - 2026-11-11 — **M0 audited (PASS with findings, `docs/audits/M0-audit.md`) and approved by operator** ("do what you recommend"). Merged to main. Fixed findings F-2..F-7, F-10 (commit 2d49152), F-1 + F-11 in protected commit b415992, F-8/F-9 accepted (hunk review of config.yaml; LiveGate real protection at M6). 127 tests pass.
 
+- 2026-11-12 — **M1 Data built** (branch `m1-data`, stories 1–7 via BMAD `bmad-build-auto`: plan → implement subagent → quick review subagent → triage/patch → commit; audit story 8 left to the coordinator). Commands: `bot data update` (public ccxt Kraken `fetch_ohlcv`, own pagination, exponential backoff via Clock, closed candles only, incremental), `bot data import-archive --zip --sha256` (checksum before any ZIP parsing, single file handle, exact `XBTEUR_{1440,240,15}.csv` members, capped streaming read, no extraction), `bot data validate` (schema/UTC/unique/monotonic/aligned/OHLC/no missing interval/synthetic rules/ratio cap; never repairs; prints data hash), `bot data audit-gaps` (read-only no-trade runs, partial coverage, NOT AUDITABLE). Overlap-checked merge (1 tick from market metadata, 1% volume), `SimClock`/`FakeClock`/`SystemClock`, immutable closed-only `CandleHistory` (`bot/candles.py`), `ReplayMarketData`, deterministic data hash. Check: 506 tests pass. No dependency added; no protected file touched.
+  - **Archive:** downloaded `Kraken_OHLCVT_2026Q3.zip` (576,348,633 B, SHA-256 `96daae63…1226`, computed, Kraken publishes none for quarterlies) into `data/raw/kraken_ohlcvt/`; manifest `docs/data-manifest.md`. Full archive (5 × 2,097,152,000 B parts) NOT downloaded (>5 GB rule) — operator action.
+  - **Real data, 2026-11-11 (public endpoint + Q3 2026 archive), `bot data validate` exit 0 for all three:**
+    - 1d: 719 rows, 2024-11-22 → 2026-11-10 (92 archive, 627 api), 0 synthetic, hash `975bb436…`.
+    - 4h: 802 rows, 2026-07-01 00:00 → 2026-11-11 12:00 (552 archive, 250 api), 0 synthetic, hash `d62eb114…`.
+    - 15m: 720 rows, 2026-11-04 07:45 → 2026-11-11 19:30 (api only), 0 synthetic. Importing Q3 15m is refused: `download gap at 2026-10-01` (Q3 ends 2026-09-30; 15m API window is ~7.5 days).
+    - Overlap archive vs API: 92 daily and 552 4h candles compared, max price diff 0 ticks, max volume diff ~4e-14.
+    - Synthetic ratio from `history_start` (2017-01-01): 0 on all timeframes.
+    - **2013–2016 daily gap audit: NOT AUDITABLE** — no cached candles before 2024-11-22 until the full archive is imported (`bot data audit-gaps`).
+  - **M1 "done when" status:** validation, fail-loudly tests, closed-candle view: met. "Several years of 1d and 4h": NOT met (1d ≈ 2 years, 4h ≈ 4 months) until the operator imports the full archive. 15m: validated only for the last week; Oct 2026 has no official source until Kraken publishes Q4 2026.
+
 ## Next
 
-1. M1 Data: Kraken OHLCVT archive import + ccxt recent fill, Parquet cache, validation; several years of 1d and 4h BTC/EUR cached and validated. Then independent M1 audit and operator review.
+1. Operator: download the 5 full-archive parts into a new folder `data/raw/kraken_ohlcvt_full/`, check part hashes, reassemble, run `bot data import-archive --zip data/raw/kraken_ohlcvt_full/Kraken_OHLCVT_Full.zip --sha256 bc273e9027470b07d790a7fa4df9bb43f0dfc527c20c6ecae48402e123e7b1c7`, then Q3 again, `bot data update`, `bot data validate`, `bot data audit-gaps` (steps in `docs/data-manifest.md`). Then fix `data.history_start` from the measured gaps.
+2. Independent M1 audit (story 8), then operator review of M1.
+3. Decide the 15m source for 2026-10-01..2026-11-03 (wait for Kraken Q4 2026 file, or a new story: rebuild 15m from the public Trades endpoint). Keep `bot data update --timeframe 15m` running at least weekly, otherwise the 7.5-day API window leaves a gap that fails loudly.
 
 ## Decisions log
 
@@ -59,6 +72,16 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 
 | 2026-11-11 | **Operator: "don't limit yourself to 4 orders a day, we go when we think there's a good call."** Trade-count caps raised to runaway-bug backstops: 20 intents/day, 120 exchange submissions/day; per-intent cap 12 moved into protected `risk:` (supersedes the AD-10 deviation above); integer limits strict. Protected commit b415992 | Operator's explicit request; caps kept only as protection against a looping bug |
 | 2026-11-11 | Operator approved all recommendations at M0 review: dashboard engage-only kill switch, risk checks built in M2 (backtest uses them), KrakenBroker in M6, any unhandled error or code fix during M5 restarts the 4-week clock | "do what you recommend" |
+| 2026-11-11 | M1 built through BMAD `bmad-build-auto` (full route for stories 1–5, oneshot for 6–7), quick review lens per story; follow-up reviews recommended by the workflow for stories 1, 2, 5 were not run (left to the independent audit) | Coordinator instruction; cost |
+| 2026-11-11 | Cache stays at `var/data/BTC-EUR/{tf}.parquet` (AD-18); raw downloads under `data/raw/` (both gitignored) | Architecture path; coordinator asked for raw downloads in `data/raw/` |
+| 2026-11-11 | Downloaded only `Kraken_OHLCVT_2026Q3.zip` (smallest official file with XBTEUR that overlaps the API window); full archive left to operator | >5 GB with no per-pair file; Q3 makes the real archive-vs-API overlap check possible |
+| 2026-11-11 | Quarterly ZIP checksum is trust-on-first-use (computed at download, recorded in `docs/data-manifest.md`); full archive uses Kraken's published SHA-256 | Kraken publishes no checksum for quarterly files |
+| 2026-11-11 | API rows carry `trades = <NA>` | ccxt's unified OHLCV drops Kraken's trade count |
+| 2026-11-11 | No-trade fill only between two archive rows; every synthetic run must be archive-bounded; merge precedence archive > synthetic > api | A forward-filled API gap must never pass validation |
+| 2026-11-11 | Overlap tick read from public market metadata (`load_markets`), only when merging into an existing cache; float epsilon = 1e-6 × tick | CON-03; offline imports report the real error; tolerance must not grow with price |
+| 2026-11-11 | `data.history_start: 2017-01-01` provisional (synthetic-ratio cap 0.1% applies from it) | Cannot be measured until the full archive is imported; to be fixed before any backtest |
+| 2026-11-11 | `bot data audit-gaps` prints NOT AUDITABLE / PARTIAL COVERAGE instead of "no gaps" when the cache does not cover the window | An absent archive must never look like a clean audit |
+| 2026-11-11 | Interpretation (flag at review): `validate` exit 0 for 15m covers only the API week; 15m import of Q3 fails loudly on the Oct 2026 download gap, by design | AD-18: download gaps always fail |
 
 ## Brief corrections (from research)
 
