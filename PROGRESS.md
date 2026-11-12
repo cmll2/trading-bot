@@ -5,7 +5,7 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 ## Status
 
 - **Current phase:** M1 Data built (branch `m1-data`); independent M1 audit and operator review pending.
-- **Blocked on:** nothing for 1d/4h (full archive imported 2026-11-12). 15m needs two operator decisions (see Next). Story 6 ticket stays `blocked` on 15m only.
+- **Blocked on:** nothing. 1d/4h/15m validated over 2013-09-10 → 2026-11-12; awaiting independent M1 audit and operator review.
 
 ## Done
 
@@ -35,10 +35,20 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
   - **2013–2016 daily gap audit:** 4 no-trade days, all Sep 2013 (2013-09-12, 09-20, 09-26..27); none in 2014–2016. 4h: 168 no-trade candles, 167 in Sep–Nov 2013, 1 on 2016-01-27.
   - From 2017: 1d one no-trade day (2018-01-12, the Jan 2018 Kraken outage); 4h 11 candles (2018-01-11..13 outage, 2024-04-14, 2025-11-01). Synthetic ratio from 2017-01-01: 1d 0.028%, 4h 0.051% (cap 0.1%).
 
+- 2026-11-12 — **15m completed.** Per-timeframe synthetic cap (commit a142323) and story 9 `bot data backfill-trades` (commit ea0f94d: public `fetch_trades`, id dedupe, backoff, checkpoint/resume, archive OHLCVT convention, `source="trades"`, interior empty buckets filled flat, overlap-checked merge). Real backfill 2026-10-01 → 2026-11-05: 574,219 trades → 3,358 candles + 2 filled flat (2026-10-30 02:30–02:45), 11.6 min; overlap with API candles 65 (first run) / 3,360 (rerun from checkpoint), 0 ticks, volume diff ~3e-16. Then 15m archive import (contiguous: archive ends 2026-09-30 23:45, trades start 2026-10-01 00:00). Final real `bot data update` + `bot data validate`, exit 0:
+
+  | Timeframe | First | Last | Rows | archive / trades / api / synthetic | Synthetic ratio from 2017-01-01 (cap) |
+  |---|---|---|---|---|---|
+  | 1d | 2013-09-10 | 2026-11-11 | 4,811 | 4,764 / 0 / 42 / 5 | 0.028% (0.1%) |
+  | 4h | 2013-09-10 20:00 | 2026-11-12 16:00 | 28,866 | 28,430 / 0 / 257 / 179 | 0.051% (0.1%) |
+  | 15m | 2013-09-10 23:45 | 2026-11-12 21:45 | 461,849 | 448,136 / 3,358 / 760 / 9,595 | 0.162% (0.5%) |
+
+  Hashes: 1d `d008f171…`, 4h `fc370334…`, 15m `0b813d85…`. 15m synthetic rows are concentrated in 2013–2015 (5,972 / 2,387 / 559).
+
 ## Next
 
-1. Independent M1 audit (story 8), then operator review of M1.
-2. Operator decisions for 15m (fill-model data, AD-6): (a) source for 2026-10-01..2026-11-03 — wait for Kraken's Q4 2026 file, or a new story to rebuild 15m from the public Trades endpoint; (b) 15m synthetic ratio is 0.163% from 2017 — choose a later 15m start date or a per-timeframe cap (no silent change). Meanwhile keep `bot data update` running at least weekly (15m API window ≈ 7.5 days).
+1. Independent M1 audit (story 8), then operator review of M1. `data/raw/` stays until after the audit (coordinator handles it).
+2. Keep `bot data update` running at least weekly (15m API window ≈ 7.5 days); if it lapses, `bot data backfill-trades` closes the hole.
 3. M2 (after review): backtests use 1d from `data.history_start`; holdout 2025-11-11 → 2026-11-10 stays untouched until the single holdout run.
 
 ## Decisions log
@@ -89,9 +99,13 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 | 2026-11-11 | `data.history_start: 2017-01-01` provisional (synthetic-ratio cap 0.1% applies from it) | Cannot be measured until the full archive is imported; to be fixed before any backtest |
 | 2026-11-12 | **Keep `data.history_start: 2017-01-01`** (provisional until M1 review): measured 1d 0.028% / 4h 0.051% synthetic from it (cap 0.1%), ~8.9 years before the holdout; earlier years have dense 2013 gaps | Measured on the full archive; chosen on data quality only, before any backtest |
 | 2026-11-12 | Split archive imported in place (`ConcatReader`), never reassembled | 23 GB free disk; reassembly would need ~9.5 GB more |
-| 2026-11-12 | 15m left at the API week; no config change to pass its 0.163% ratio | Changing the cap or start date is an operator decision |
+| 2026-11-12 | ~~15m left at the API week; no config change to pass its 0.163% ratio~~ (superseded by the coordinator decisions below) | Changing the cap or start date is an operator decision |
 | 2026-11-11 | `bot data audit-gaps` prints NOT AUDITABLE / PARTIAL COVERAGE instead of "no gaps" when the cache does not cover the window | An absent archive must never look like a clean audit |
 | 2026-11-11 | Interpretation (flag at review): `validate` exit 0 for 15m covers only the API week; 15m import of Q3 fails loudly on the Oct 2026 download gap, by design | AD-18: download gaps always fail |
+| 2026-11-12 | **Coordinator: rebuild 15m from Kraken's public trades** for the span between the archive end and the API window (`bot data backfill-trades`, story 9) | No official 15m source for 2026-10-01 → 2026-11-04; trades endpoint is public and complete |
+| 2026-11-12 | **Coordinator: per-timeframe synthetic cap — 15m 0.5%, 1d/4h 0.1%; `history_start` 2017-01-01 for all** (`data.max_synthetic_ratio_by_timeframe`) | A no-trade 15-minute period is a true flat market state, not missing data; 15m only feeds execution-window fill simulation and the plumbing strategy |
+| 2026-11-12 | New candle source `trades` (complete exchange trade record): precedence archive > trades > synthetic > api; any hole touching a trades row is a download gap; the backfill fills only its own interior empty buckets | Prevents cross-source holes from being filled flat (review finding) |
+| 2026-11-12 | Trades pagination: dedupe by Kraken `trade_id`; a short page with no new id = end of data; a full page with no new id fails loudly | ccxt returns trades from `since` inclusive (whole seconds); never skip trades |
 
 ## Brief corrections (from research)
 
