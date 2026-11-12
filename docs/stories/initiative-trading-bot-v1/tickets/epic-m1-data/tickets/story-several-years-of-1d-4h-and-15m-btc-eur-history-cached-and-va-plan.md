@@ -3,7 +3,7 @@ title: 'Several years of 1d, 4h and 15m BTC/EUR history cached and validated'
 type: feature
 ticket: '6'
 created: '2026-11-11'
-status: in-review
+status: blocked
 baseline_revision: 'f2d877ac519f1af6c346aeab03fbd15c1f47350e'
 route: oneshot
 route_source: auto
@@ -16,6 +16,8 @@ followup_review_recommended: false
 context: []
 warnings: []
 deferred: []
+blocked_at: "2026-11-11"
+blocked_reason: "Operator must download+import the full Kraken OHLCVT archive (~10 GB, docs/data-manifest.md); 15m also lacks 2026-10-01..2026-11-03 until Kraken publishes Q4 2026"
 ---
 
 <intent-contract>
