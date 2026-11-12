@@ -103,3 +103,16 @@ risk = "medium"
 refine = true
 references = ["architecture — docs/planning/architecture.md, AD-21", "architecture — docs/planning/architecture.md, AD-24"]
 
+
+[[entry]]
+id = 9
+type = "story"
+title = "15m candles rebuilt from public trades between archive end and API window"
+description = "`bot data backfill-trades --timeframe 15m --start ... --end ...` rebuilds candles from Kraken's public trades (ccxt fetch_trades, paginated, rate-limit backoff, checkpointed) with the archive's OHLCVT convention, and merges them through the overlap check."
+verify = "Fake-ccxt tests (pagination, dedupe, backoff, resume, aggregation, no-trade buckets, overlap mismatch); run for real for 2026-10-01 to the API window; `bot data validate --timeframe 15m` exits 0."
+covers = ["R1", "R2", "R3"]
+after = [4, 6]
+hitl = false
+risk = "medium"
+refine = false
+references = ["architecture — docs/planning/architecture.md, AD-18", "research — docs/research/build-vs-reuse-and-kraken.md — B6 option 2"]
