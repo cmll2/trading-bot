@@ -103,6 +103,9 @@ class DataSettings(_Frozen):
     # Kraken's archive omits no-trade intervals: fill them flat (synthetic rows) or fail.
     no_trade_policy: Literal["fill_flat", "fail"]
     max_synthetic_ratio: Decimal = Field(ge=0, lt=1, allow_inf_nan=False)
+    # Per-timeframe override of the cap (a flat 15-minute period is a real no-trade market
+    # state; 15m only feeds execution-window fill simulation and the plumbing strategy).
+    max_synthetic_ratio_by_timeframe: dict[DataTimeframe, Decimal] = Field(default_factory=dict)
     # A-3: archive and API rows for the same open_at must agree within these tolerances.
     overlap_price_tolerance_ticks: int = Field(ge=0, strict=True)
     overlap_volume_tolerance_fraction: Decimal = Field(ge=0, lt=1, allow_inf_nan=False)
@@ -115,6 +118,18 @@ class DataSettings(_Frozen):
         if len(set(v)) != len(v):
             raise ValueError("data.timeframes must not repeat a timeframe")
         return v
+
+    @field_validator("max_synthetic_ratio_by_timeframe")
+    @classmethod
+    def _caps_in_range(cls, v: dict[str, Decimal]) -> dict[str, Decimal]:
+        for tf, cap in v.items():
+            if not cap.is_finite() or not (0 <= cap < 1):
+                raise ValueError(f"data.max_synthetic_ratio_by_timeframe.{tf} must be in [0, 1)")
+        return v
+
+    def synthetic_cap(self, tf: str) -> Decimal:
+        """Cap on synthetic rows / rows from ``history_start`` for ``tf``."""
+        return self.max_synthetic_ratio_by_timeframe.get(tf, self.max_synthetic_ratio)
 
 
 class PathSettings(_Frozen):

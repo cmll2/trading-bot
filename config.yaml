@@ -50,6 +50,8 @@ data:
   history_start: 2017-01-01         # provisional; re-measured in M1 story 6 (FR-03)
   no_trade_policy: fill_flat        # fill_flat | fail: archive omits no-trade intervals
   max_synthetic_ratio: "0.001"      # max synthetic rows / rows from history_start on
+  max_synthetic_ratio_by_timeframe: # per-timeframe overrides (coordinator 2026-11-12)
+    15m: "0.005"                    # a flat 15-min period is a real no-trade state
   overlap_price_tolerance_ticks: 1  # archive vs API, same open_at: each of O,H,L,C (A-3)
   overlap_volume_tolerance_fraction: "0.01"  # and volume, relative to the larger one
 

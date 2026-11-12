@@ -322,11 +322,12 @@ def validate_frame(
     after = (df["open_at"] >= pd.Timestamp(data_settings.history_start, tz="UTC")).to_numpy()
     synth_after, rows_after = int((synth & after).sum()), int(after.sum())
     ratio = Decimal(synth_after) / Decimal(rows_after) if rows_after else Decimal(0)
-    if ratio > data_settings.max_synthetic_ratio:
+    cap = data_settings.synthetic_cap(tf)
+    if ratio > cap:
         raise DataValidationError(
             f"synthetic ratio {float(ratio):.6g} ({synth_after}/{rows_after} rows from "
             f"{data_settings.history_start}) exceeds max_synthetic_ratio "
-            f"{data_settings.max_synthetic_ratio}"
+            f"{cap}"
         )
 
     years = df.loc[synth, "open_at"].dt.year.value_counts().sort_index()
