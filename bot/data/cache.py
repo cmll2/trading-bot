@@ -19,7 +19,8 @@ from bot.config import TIMEFRAME_SECONDS
 
 COLUMNS = ("open_at", "open", "high", "low", "close", "volume", "trades", "source")
 PRICE_COLUMNS = ("open", "high", "low", "close", "volume")
-SOURCES = ("archive", "api", "synthetic")
+# ``trades``: rebuilt from the complete public trade record (M1 story 9, bot.data.trades).
+SOURCES = ("archive", "api", "synthetic", "trades")
 
 OPEN_AT_DTYPE = pd.DatetimeTZDtype(unit="ms", tz="UTC")
 DTYPES: dict[str, object] = {

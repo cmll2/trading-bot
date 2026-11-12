@@ -585,7 +585,7 @@ def test_archive_agreeing_overlap_becomes_archive_api_rows_stay(
         df.iloc[8:].reset_index(drop=True), api.iloc[5:].reset_index(drop=True)
     )
     assert "1d: overlap rows_compared=5 max_price_diff_ticks=1 " in out
-    assert "sources={'archive': 8, 'api': 5, 'synthetic': 0}" in out
+    assert "sources={'archive': 8, 'api': 5, 'synthetic': 0, 'trades': 0}" in out
     assert _run(repo, "validate", "--timeframe", "1d") == cli.EXIT_OK
 
 

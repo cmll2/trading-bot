@@ -50,13 +50,23 @@ class FakeExchange:
     exception. When the script is exhausted it returns an empty page.
 
     ``load_markets`` serves ``markets`` (or raises it if it is an exception); ccxt's
-    TICK_SIZE precision mode, as for Kraken."""
+    TICK_SIZE precision mode, as for Kraken.
+
+    ``fetch_trades`` works the same way on ``trades_script`` (pages of ccxt trade dicts
+    ``{"id": "123", "timestamp": ms, "price": p, "amount": a}``), recording ``trade_calls``.
+    A ``None`` script item, or an exhausted script with ``trades_book`` set, serves a page
+    from ``trades_book`` as ccxt does: the first ``min(trades_page_size, limit)`` trades with
+    time >= ``since`` in ms (so the cursor trade comes back on the next page)."""
 
     script: list[Any] = field(default_factory=list)
     calls: list[dict[str, Any]] = field(default_factory=list)
     markets: Any = field(default_factory=lambda: {"BTC/EUR": {"precision": {"price": TICK}}})
     precisionMode: int = ccxt.TICK_SIZE  # noqa: N815 (ccxt attribute name)
     load_markets_calls: int = 0
+    trades_script: list[Any] = field(default_factory=list)
+    trade_calls: list[dict[str, Any]] = field(default_factory=list)
+    trades_book: list[dict[str, Any]] | None = None
+    trades_page_size: int = 1000
 
     def load_markets(self, reload: bool = False) -> Any:
         self.load_markets_calls += 1
@@ -87,6 +97,28 @@ class FakeExchange:
         if isinstance(item, BaseException):
             raise item
         return item
+
+    def fetch_trades(
+        self,
+        symbol: str,
+        since: int | None = None,
+        limit: int | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        self.trade_calls.append(
+            {"symbol": symbol, "since": since, "limit": limit, "params": params}
+        )
+        item = self.trades_script.pop(0) if self.trades_script else None
+        if isinstance(item, BaseException):
+            raise item
+        if item is not None:
+            return item
+        if self.trades_book is None:
+            return []
+        floor = 0 if since is None else since
+        size = self.trades_page_size if limit is None else min(self.trades_page_size, limit)
+        page = [t for t in self.trades_book if t["timestamp"] >= floor]
+        return [dict(t) for t in page[:size]]
 
 
 def ms(ts: pd.Timestamp | datetime) -> int:

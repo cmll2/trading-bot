@@ -41,7 +41,7 @@ def _with(df: pd.DataFrame, day: int, **values: float) -> pd.DataFrame:
 
 def test_merge_error_is_a_data_validation_error() -> None:
     assert issubclass(MergeError, DataValidationError)
-    assert SOURCE_PRECEDENCE == {"archive": 3, "synthetic": 2, "api": 1}
+    assert SOURCE_PRECEDENCE == {"archive": 4, "trades": 3, "synthetic": 2, "api": 1}
 
 
 # --- tolerance -------------------------------------------------------------------------------

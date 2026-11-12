@@ -34,7 +34,7 @@ def test_good_frame_reports_range() -> None:
         rows=5,
         first=ts(0),
         last=ts(4),
-        sources={"archive": 0, "api": 5, "synthetic": 0},
+        sources={"archive": 0, "api": 5, "synthetic": 0, "trades": 0},
     )
 
 

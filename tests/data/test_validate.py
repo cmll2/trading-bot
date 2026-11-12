@@ -286,7 +286,7 @@ def test_synthetic_before_history_start_passes_and_is_reported() -> None:
     assert report.synthetic_rows == 27
     assert report.synthetic_ratio_after_start == 0.0
     assert report.synthetic_by_year == {2024: 27}
-    assert report.sources == {"archive": 14, "api": 0, "synthetic": 27}
+    assert report.sources == {"archive": 14, "api": 0, "synthetic": 27, "trades": 0}
     # The same frame fails the cap when history_start covers the synthetic rows.
     assert "synthetic ratio" in _defect(out).defect
 

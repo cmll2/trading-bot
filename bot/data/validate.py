@@ -8,9 +8,11 @@ rows.
 
 Kraken's archive omits intervals with no trade. Missing intervals are therefore classified
 (``classify_missing``): a hole whose neighbours are both ``archive``/``synthetic`` rows is a
-legitimate ``no_trade`` interval; any other hole (inside the API range or between sources)
-is a ``download`` gap and is never filled. Only writers (import/update) fill no-trade holes,
-through ``apply_no_trade_policy``, before validating; every filled row is ``synthetic``.
+legitimate ``no_trade`` interval; any other hole (inside the API range, touching a ``trades``
+row, or between sources) is a ``download`` gap and is never filled. Only writers fill
+no-trade holes, through ``apply_no_trade_policy``, before validating; every filled row is
+``synthetic``. ``bot data backfill-trades`` fills the empty buckets inside its own window
+before merging (``bot.data.trades.fill_interior_buckets``).
 """
 
 from __future__ import annotations
@@ -39,6 +41,9 @@ from bot.data.cache import (
 
 GapKind = Literal["no_trade", "download"]
 NO_TRADE_NEIGHBOURS = ("archive", "synthetic")
+# ``trades`` rows (M1 story 9) bound synthetic runs like ``archive`` rows: the backfill fills
+# its own interior empty buckets. A hole touching a ``trades`` row is still a download gap.
+SYNTHETIC_BOUNDARIES = ("archive", "trades")
 
 
 class DataValidationError(ValueError):
@@ -166,12 +171,13 @@ def check_ohlc(df: pd.DataFrame, tf: str) -> None:
 
 def check_synthetic_rows(df: pd.DataFrame, tf: str) -> None:
     """A synthetic row is a flat no-trade candle: O=H=L=C=previous close, volume 0, trades 0,
-    and every run of consecutive synthetic rows sits between two ``archive`` rows (no-trade
-    intervals exist only inside the archive range; an API gap is never forward-filled)."""
+    and every run of consecutive synthetic rows sits between two ``archive``/``trades`` rows
+    (no-trade intervals exist only inside a complete trade record; an API gap is never
+    forward-filled)."""
     synth = _bool(df["source"] == "synthetic")
     if not synth.any():
         return
-    archive = _bool(df["source"] == "archive")
+    archive = _bool(df["source"].isin(SYNTHETIC_BOUNDARIES))
     prev_synth = np.concatenate([[False], synth[:-1]])
     next_synth = np.concatenate([synth[1:], [False]])
     prev_archive = np.concatenate([[False], archive[:-1]])
@@ -257,9 +263,10 @@ def apply_no_trade_policy(df: pd.DataFrame, tf: str, policy: str) -> pd.DataFram
     the exact cache dtypes.
 
     ``fill_flat`` inserts, for each missing interval between two ``archive``/``synthetic``
-    rows, a ``synthetic`` row with O=H=L=C=the close of the row before the hole, volume 0,
-    trades 0. ``fail`` raises ``no-trade gap`` at the first such interval. Download gaps
-    (API range or between sources) are never filled; ``validate_frame`` reports them.
+    rows, a ``synthetic`` row with O=H=L=C=the close of
+    the row before the hole, volume 0, trades 0. ``fail`` raises ``no-trade gap`` at the first
+    such interval. Download gaps (API range or between sources) are never filled;
+    ``validate_frame`` reports them.
     Structural defects (columns, dtypes, nulls, order, duplicates, alignment) raise
     ``DataValidationError`` here, checked before anything is cast or filled.
     """

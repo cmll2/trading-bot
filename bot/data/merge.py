@@ -1,8 +1,9 @@
 """Overlap-checked merge of candle sources (AD-18, assumption A-3). M1 story 4.
 
-History comes from two sources: the Kraken OHLCVT archive and the public API (last 720
-candles). Both writers (``bot data update`` and ``bot data import-archive``) combine what is
-cached with what they bring through ``merge_candles``:
+History comes from the Kraken OHLCVT archive, candles rebuilt from public trades (story 9)
+and the public API (last 720 candles). Every writer (``bot data update``,
+``bot data import-archive``, ``bot data backfill-trades``) combines what is cached with what
+it brings through ``merge_candles``:
 
 - rows present in both frames (same ``open_at``) must agree: each of open/high/low/close
   within ``price_tol_ticks`` x the exchange tick (read from market metadata, CON-03), volume
@@ -10,9 +11,9 @@ cached with what they bring through ``merge_candles``:
   compared (API rows carry none). Any disagreement raises ``MergeError`` and nothing is
   merged: values are never averaged or patched;
 - on agreement the row of the higher-precedence source is kept
-  (archive > synthetic > api; on a tie the existing row stays), so per-row ``source``
-  survives. Agreeing synthetic and api rows carry the same values, and keeping
-  ``synthetic`` keeps every synthetic run bounded by archive rows (story 2);
+  (archive > trades > synthetic > api; on a tie the existing row stays), so per-row
+  ``source`` survives. Agreeing synthetic and api rows carry the same values, and keeping
+  ``synthetic`` keeps every synthetic run bounded by archive/trades rows (story 2);
 - the result is sorted by ``open_at``, unique and normalized. Holes between the sources are
   not touched here: they stay download gaps (story 2 classification).
 """
@@ -29,7 +30,7 @@ import pandas as pd
 from bot.data.cache import empty_frame, normalize
 from bot.data.validate import DataValidationError
 
-SOURCE_PRECEDENCE: dict[str, int] = {"archive": 3, "synthetic": 2, "api": 1}
+SOURCE_PRECEDENCE: dict[str, int] = {"archive": 4, "trades": 3, "synthetic": 2, "api": 1}
 PRICE_FIELDS = ("open", "high", "low", "close")
 # Float epsilons: exactly N ticks passes, N ticks + 1 tick fails. The price epsilon is tied
 # to the tick (a price-relative one would exceed a tick at very high prices).

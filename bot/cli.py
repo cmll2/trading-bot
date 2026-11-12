@@ -10,7 +10,9 @@ for a split archive repeat ``--zip`` once per part, in order, and add ``--part-s
 M1 story 4: both writers merge through the overlap-checked ``merge_candles`` (tick from the
 public exchange's market metadata) and print the overlap statistics. Data errors exit with
 ``EXIT_DATA_ERROR``. M1 story 5: ``bot data validate`` also prints each file's ``data_hash``
-(NFR-02, AD-21).
+(NFR-02, AD-21). M1 story 9: ``bot data backfill-trades --timeframe TF --start ISO --end ISO``
+rebuilds candles from public trades over ``[start, end)`` (UTC; a date means 00:00 UTC),
+resumable through a trades checkpoint, and merges them like the other writers.
 
 ``live`` requires BOTH the ``--live`` flag AND ``TRADING_BOT_LIVE=I_ACCEPT_REAL_ORDERS`` in
 the process environment (never from .env), plus a strategy allowed in live. Only
@@ -24,7 +26,7 @@ import argparse
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -45,9 +47,11 @@ from bot.data.archive import ArchiveError, import_archive
 from bot.data.cache import SOURCES, cache_path, data_hash
 from bot.data.fetch import FetchError, make_public_exchange, price_tick
 from bot.data.merge import OverlapStats
+from bot.data.trades import backfill_trades
 from bot.data.update import update_timeframe_with_stats
 from bot.data.validate import (
     DataValidationError,
+    ValidationReport,
     audit_gaps,
     read_cache_checked,
     validate_frame,
@@ -167,7 +171,35 @@ def _parser() -> argparse.ArgumentParser:
             p.add_argument(
                 "--end", type=date.fromisoformat, default=date(2016, 12, 31), help="inclusive"
             )
+
+    p = data_sub.add_parser(
+        "backfill-trades",
+        help="rebuild candles from public trades over [start, end) and merge them (resumable)",
+        allow_abbrev=False,
+    )
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    p.add_argument("--env-file", type=Path, default=DEFAULT_ENV_PATH)
+    p.add_argument("--timeframe", choices=DATA_TIMEFRAMES, required=True)
+    for flag, what in (("--start", "first candle (inclusive)"), ("--end", "exclusive")):
+        p.add_argument(
+            flag,
+            type=_utc_instant,
+            required=True,
+            help=f"{what}; ISO date or datetime, UTC (a date means 00:00 UTC)",
+        )
     return parser
+
+
+def _utc_instant(text: str) -> datetime:
+    """ISO date (00:00 UTC) or datetime; naive values are UTC, offsets converted to UTC."""
+    try:
+        if len(text) == 10:
+            d = date.fromisoformat(text)
+            return datetime(d.year, d.month, d.day, tzinfo=UTC)
+        t = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not an ISO date or datetime: {text!r}") from exc
+    return t.replace(tzinfo=UTC) if t.tzinfo is None else t.astimezone(UTC)
 
 
 def _err(msg: str) -> None:
@@ -188,6 +220,17 @@ def _print_overlap(tf: str, stats: OverlapStats) -> None:
     )
 
 
+def _print_report(tf: str, report: ValidationReport, settings: Settings) -> None:
+    print(
+        f"{tf}: rows={report.rows} first={report.first} last={report.last} "
+        f"sources={report.sources} synthetic={report.synthetic_rows} "
+        f"synthetic_ratio_from_{settings.data.history_start}="
+        f"{report.synthetic_ratio_after_start:.6g}"
+    )
+    if report.synthetic_by_year:
+        print(f"{tf}: synthetic_by_year={report.synthetic_by_year}")
+
+
 def _data_command(args: argparse.Namespace) -> int:
     try:
         settings = load_settings(args.config, args.env_file)
@@ -198,6 +241,8 @@ def _data_command(args: argparse.Namespace) -> int:
     clock = _clock_factory()
     if args.data_command == "import-archive":
         return _import_archive_command(args, settings, timeframes, clock)
+    if args.data_command == "backfill-trades":
+        return _backfill_trades_command(args, settings, clock)
     if args.data_command == "audit-gaps":
         return _audit_gaps_command(
             args, settings, list(dict.fromkeys(args.timeframe or ["1d"])), clock
@@ -226,19 +271,35 @@ def _data_command(args: argparse.Namespace) -> int:
             _err(f"DATA ERROR [{tf}]: {type(exc).__name__}: {exc}")
             failed = True
             continue
-        print(
-            f"{tf}: rows={report.rows} first={report.first} last={report.last} "
-            f"sources={report.sources} synthetic={report.synthetic_rows} "
-            f"synthetic_ratio_from_{settings.data.history_start}="
-            f"{report.synthetic_ratio_after_start:.6g}"
-        )
-        if report.synthetic_by_year:
-            print(f"{tf}: synthetic_by_year={report.synthetic_by_year}")
+        _print_report(tf, report, settings)
         if stats is not None:
             _print_overlap(tf, stats)
         if args.data_command == "validate":
             print(f"{tf}: data_hash={data_hash(frame)}")
     return EXIT_DATA_ERROR if failed else EXIT_OK
+
+
+def _backfill_trades_command(args: argparse.Namespace, settings: Settings, clock: Clock) -> int:
+    """Rebuild candles from public trades (M1 story 9); exit 4 on any data error."""
+    tf = args.timeframe
+    try:
+        result = backfill_trades(settings, _exchange_factory(), clock, tf, args.start, args.end)
+        report = validate_frame(result.frame, tf, settings.data)
+    except (FetchError, DataValidationError) as exc:
+        _data_error(tf, exc)
+        return EXIT_DATA_ERROR
+    except OSError as exc:  # e.g. cache file locked on Windows
+        _err(f"DATA ERROR [{tf}]: {type(exc).__name__}: {exc}")
+        return EXIT_DATA_ERROR
+    print(
+        f"{tf}: trades fetched={result.trades_new + result.trades_from_checkpoint} "
+        f"(new={result.trades_new} from_checkpoint={result.trades_from_checkpoint}) "
+        f"candles_built={result.candles_built} synthetic_filled={result.synthetic_filled} "
+        f"checkpoint={result.checkpoint}"
+    )
+    _print_overlap(tf, result.stats)
+    _print_report(tf, report, settings)
+    return EXIT_OK
 
 
 def _audit_gaps_command(
