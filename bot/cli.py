@@ -5,7 +5,8 @@ configuration and the strategy/mode combination, then exit with "not implemented
 
 M1 adds ``bot data update`` and ``bot data validate`` (AD-18): public, unauthenticated
 candle download into the local Parquet cache, and its validation. M1 story 3 adds
-``bot data import-archive --zip PATH --sha256 HEX`` (Kraken OHLCVT archive, checksum first).
+``bot data import-archive --zip PATH --sha256 HEX`` (Kraken OHLCVT archive, checksum first);
+for a split archive repeat ``--zip`` once per part, in order, and add ``--part-sums FILE``.
 M1 story 4: both writers merge through the overlap-checked ``merge_candles`` (tick from the
 public exchange's market metadata) and print the overlap statistics. Data errors exit with
 ``EXIT_DATA_ERROR``. M1 story 5: ``bot data validate`` also prints each file's ``data_hash``
@@ -141,9 +142,25 @@ def _parser() -> argparse.ArgumentParser:
             help=f"timeframe to process; repeatable (default: {default_tf})",
         )
         if name == "import-archive":
-            p.add_argument("--zip", type=Path, required=True, help="Kraken OHLCVT ZIP archive")
             p.add_argument(
-                "--sha256", required=True, help="expected SHA-256 of the ZIP (64 hex characters)"
+                "--zip",
+                type=Path,
+                action="append",
+                required=True,
+                help="Kraken OHLCVT ZIP archive; repeat once per part, in order, for a split "
+                "archive (Kraken_OHLCVT_Full.zip.part00 ... part04; no reassembly needed)",
+            )
+            p.add_argument(
+                "--part-sums",
+                type=Path,
+                default=None,
+                help="published part checksum file (OHLCVT_Full_PARTS_SHA256SUMS.txt); "
+                "required with several --zip parts",
+            )
+            p.add_argument(
+                "--sha256",
+                required=True,
+                help="expected SHA-256 of the whole ZIP (of the parts concatenated), 64 hex",
             )
         if name == "audit-gaps":
             p.add_argument("--start", type=date.fromisoformat, default=date(2013, 1, 1))
@@ -291,11 +308,12 @@ def _import_archive_command(
     try:
         import_archive(
             settings,
-            args.zip,
+            args.zip[0] if len(args.zip) == 1 else args.zip,
             args.sha256,
             timeframes,
             # Tick from public market metadata (CON-03), fetched only to merge into a cache.
             tick_provider=lambda: price_tick(_exchange_factory(), pair),
+            part_sums=args.part_sums,
             now=clock.now(),
             on_written=_written,
         )

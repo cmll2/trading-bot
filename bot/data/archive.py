@@ -4,7 +4,11 @@ The public OHLC endpoint returns only the last 720 candles, so history comes fro
 official OHLCVT ZIP archive, supplied by the operator (nothing is downloaded here). The ZIP
 is untrusted input:
 
-- its SHA-256 is checked (streamed, whole file) BEFORE it is opened as a ZIP;
+- its SHA-256 is checked (streamed, whole file) BEFORE it is opened as a ZIP; an archive
+  split into parts (Kraken's ``Kraken_OHLCVT_Full.zip.partNN``) is read in place through
+  ``bot.data.multipart.ConcatReader`` (no reassembly on disk): every part is checked against
+  the published part checksum list AND the concatenation against the published whole-file
+  SHA-256, in one pass, before any ZIP parsing;
 - only the exact members ``XBTEUR_{1440,240,15}.csv`` are read (basename match, any
   directory prefix); ``AIXBTEUR_1440.csv``, ``XBTEURC_1440.csv`` etc. never match;
 - members are streamed into ``pandas.read_csv`` with explicit dtypes and ``header=None``;
@@ -24,7 +28,7 @@ import hashlib
 import io
 import re
 import zipfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO
@@ -36,6 +40,12 @@ from bot.config import Settings
 from bot.data.cache import cache_path, normalize, write_cache
 from bot.data.fetch import FetchError
 from bot.data.merge import OverlapStats, check_tick, merge_candles
+from bot.data.multipart import (
+    ConcatReader,
+    MultipartError,
+    check_part_order,
+    parse_sums_file,
+)
 from bot.data.validate import (
     DataValidationError,
     apply_no_trade_policy,
@@ -207,13 +217,67 @@ def _existing_cache(path: Path, tf: str, settings: Settings) -> pd.DataFrame | N
     return cached
 
 
+def _open_verified(paths: Sequence[Path], expected_sha256: str, part_sums: Path | None) -> BinaryIO:
+    """Open the archive (one file, or ordered parts) and verify it; return a handle at 0.
+
+    The handle that was hashed is the handle that will be parsed. Parts: the part checksum
+    list is parsed and the part names/order checked before any part is opened; then one pass
+    hashes every part and the whole concatenation; any mismatch refuses before parsing.
+    """
+    if not paths:
+        raise ArchiveError("no archive file given")
+    if len(paths) == 1 and part_sums is None:
+        try:
+            fh = paths[0].open("rb")
+        except OSError as exc:
+            raise ArchiveError(f"cannot read archive {paths[0]}: {exc}") from exc
+        try:
+            verify_checksum(fh, expected_sha256)
+            fh.seek(0)
+        except BaseException:
+            fh.close()
+            raise
+        return fh
+    if len(paths) < 2:
+        raise ArchiveError("--part-sums needs the archive parts: give --zip once per part")
+    if part_sums is None:
+        raise ArchiveError("several --zip parts need --part-sums (the published part checksums)")
+    try:
+        sums = parse_sums_file(part_sums)
+        check_part_order(paths, sums)
+        reader = ConcatReader(paths)
+    except MultipartError as exc:
+        raise ArchiveError(str(exc)) from exc
+    try:
+        try:
+            per_part, whole = reader.part_and_whole_sha256(HASH_CHUNK_BYTES)
+        except (MultipartError, OSError) as exc:
+            raise ArchiveError(f"cannot read archive parts: {exc}") from exc
+        for (name, expected), actual in zip(sums, per_part, strict=True):
+            if actual != expected:
+                raise ArchiveError(
+                    f"part checksum mismatch for {name}: expected {expected}, got {actual}"
+                )
+        if whole != expected_sha256.lower():
+            raise ArchiveError(
+                f"checksum mismatch for the concatenated parts (whole archive): expected "
+                f"{expected_sha256.lower()}, got {whole}"
+            )
+        reader.seek(0)
+        return io.BufferedReader(reader, buffer_size=HASH_CHUNK_BYTES)
+    except BaseException:
+        reader.close()
+        raise
+
+
 def import_archive(
     settings: Settings,
-    zip_path: Path,
+    zip_path: Path | Sequence[Path],
     expected_sha256: str,
     timeframes: Iterable[str],
     *,
     tick_provider: Callable[[], float],
+    part_sums: Path | None = None,
     now: datetime | None = None,
     on_written: Callable[[str, pd.DataFrame, OverlapStats], None] | None = None,
 ) -> dict[str, pd.DataFrame]:
@@ -232,18 +296,14 @@ def import_archive(
     tfs = list(dict.fromkeys(timeframes))
     names = {tf: member_name(pair, tf) for tf in tfs}  # refuse unmapped pair/tf up front
     _check_sha256_format(expected_sha256)  # before opening or hashing anything
+    paths = [zip_path] if isinstance(zip_path, Path) else list(zip_path)
 
     written: dict[str, pd.DataFrame] = {}
     tick: float | None = None
-    try:
-        fh = zip_path.open("rb")
-    except OSError as exc:
-        raise ArchiveError(f"cannot read archive {zip_path}: {exc}") from exc
     # One handle: the bytes hashed are the bytes parsed (a file swapped after hashing is
-    # never read). Checksum before any ZIP parsing.
+    # never read). Checksum(s) before any ZIP parsing.
+    fh = _open_verified(paths, expected_sha256, part_sums)
     with fh:
-        verify_checksum(fh, expected_sha256)
-        fh.seek(0)
         try:
             zf = zipfile.ZipFile(fh)
         except (zipfile.BadZipFile, OSError) as exc:
