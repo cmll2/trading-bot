@@ -3,7 +3,7 @@ title: 'Several years of 1d, 4h and 15m BTC/EUR history cached and validated'
 type: feature
 ticket: '6'
 created: '2026-11-11'
-status: blocked
+status: built
 baseline_revision: 'f2d877ac519f1af6c346aeab03fbd15c1f47350e'
 route: oneshot
 route_source: auto
@@ -16,8 +16,6 @@ followup_review_recommended: false
 context: []
 warnings: []
 deferred: []
-blocked_at: "2026-11-12"
-blocked_reason: "1d/4h done (full archive 2013-09-10..2026-11). 15m only: download gap 2026-10-01..2026-11-03 (no official source until Kraken Q4 2026 file) and 15m synthetic ratio 0.163% from 2017 > 0.1% cap; operator decision"
 ---
 
 <intent-contract>
@@ -64,3 +62,7 @@ Real run 2026-11-11 (public endpoint + `Kraken_OHLCVT_2026Q3.zip`): 1d 719 rows 
 - Files: `bot/data/validate.py`, `bot/cli.py`, `tests/data/test_audit_gaps.py`.
 - Verification: full check → 506 passed; real `bot data validate` exit 0 for 1d/4h/15m; real `bot data audit-gaps` output above.
 - Status: blocked — operator must download and import the full Kraken OHLCVT archive (docs/data-manifest.md); 15m additionally has an unfillable official-data gap 2026-10-01..2026-11-03 until Kraken publishes Q4 2026.
+
+## Unblocked 2026-11-12
+
+Full archive imported in place (split-archive importer), 15m Oct 2026 rebuilt from public trades (story 9), 15m cap 0.5% (coordinator). `bot data validate` exit 0 for 1d/4h/15m covering 2013-09-10 to 2026-11-12. Details in PROGRESS.md.
