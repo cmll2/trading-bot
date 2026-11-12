@@ -5,7 +5,7 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 ## Status
 
 - **Current phase:** M1 Data built (branch `m1-data`); independent M1 audit and operator review pending.
-- **Blocked on:** operator download + import of the full Kraken OHLCVT archive (~10 GB) for "several years" of history — see `docs/data-manifest.md`. Story 6 ticket marked `blocked`.
+- **Blocked on:** nothing for 1d/4h (full archive imported 2026-11-12). 15m needs two operator decisions (see Next). Story 6 ticket stays `blocked` on 15m only.
 
 ## Done
 
@@ -28,11 +28,18 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
     - **2013–2016 daily gap audit: NOT AUDITABLE** — no cached candles before 2024-11-22 until the full archive is imported (`bot data audit-gaps`).
   - **M1 "done when" status:** validation, fail-loudly tests, closed-candle view: met. "Several years of 1d and 4h": NOT met (1d ≈ 2 years, 4h ≈ 4 months) until the operator imports the full archive. 15m: validated only for the last week; Oct 2026 has no official source until Kraken publishes Q4 2026.
 
+- 2026-11-12 — **Full Kraken archive imported in place** (split-archive importer, commit ddab312: `--zip` once per part + `--part-sums`; per-part and whole SHA-256 verified in one pass before parsing; no reassembly, disk had 23 GB free). Real results, `bot data validate` exit 0 for all three:
+  - 1d: 4,810 rows, 2013-09-10 → 2026-11-10 (4,764 archive, 41 api, 5 synthetic), hash `4eb97931…`. Archive vs API overlap: 678 candles, 0 ticks, max volume diff 0.039%.
+  - 4h: 28,859 rows, 2013-09-10 20:00 → 2026-11-11 12:00 (28,430 archive, 250 api, 179 synthetic), hash `34175be1…`. Overlap 552 candles, 0 ticks.
+  - 15m: unchanged (720 api rows, last week). Import refused: `download gap at 2026-10-01` (archive ends 2026-09-30; 15m API window starts 2026-11-04). Measured separately (scratch dir): archive-only 15m fails the cap — synthetic ratio 0.163% (558/341,760 from 2017-01-01) > 0.1%.
+  - **2013–2016 daily gap audit:** 4 no-trade days, all Sep 2013 (2013-09-12, 09-20, 09-26..27); none in 2014–2016. 4h: 168 no-trade candles, 167 in Sep–Nov 2013, 1 on 2016-01-27.
+  - From 2017: 1d one no-trade day (2018-01-12, the Jan 2018 Kraken outage); 4h 11 candles (2018-01-11..13 outage, 2024-04-14, 2025-11-01). Synthetic ratio from 2017-01-01: 1d 0.028%, 4h 0.051% (cap 0.1%).
+
 ## Next
 
-1. Operator: download the 5 full-archive parts into a new folder `data/raw/kraken_ohlcvt_full/`, check part hashes, reassemble, run `bot data import-archive --zip data/raw/kraken_ohlcvt_full/Kraken_OHLCVT_Full.zip --sha256 bc273e9027470b07d790a7fa4df9bb43f0dfc527c20c6ecae48402e123e7b1c7`, then Q3 again, `bot data update`, `bot data validate`, `bot data audit-gaps` (steps in `docs/data-manifest.md`). Then fix `data.history_start` from the measured gaps.
-2. Independent M1 audit (story 8), then operator review of M1.
-3. Decide the 15m source for 2026-10-01..2026-11-03 (wait for Kraken Q4 2026 file, or a new story: rebuild 15m from the public Trades endpoint). Keep `bot data update --timeframe 15m` running at least weekly, otherwise the 7.5-day API window leaves a gap that fails loudly.
+1. Independent M1 audit (story 8), then operator review of M1.
+2. Operator decisions for 15m (fill-model data, AD-6): (a) source for 2026-10-01..2026-11-03 — wait for Kraken's Q4 2026 file, or a new story to rebuild 15m from the public Trades endpoint; (b) 15m synthetic ratio is 0.163% from 2017 — choose a later 15m start date or a per-timeframe cap (no silent change). Meanwhile keep `bot data update` running at least weekly (15m API window ≈ 7.5 days).
+3. M2 (after review): backtests use 1d from `data.history_start`; holdout 2025-11-11 → 2026-11-10 stays untouched until the single holdout run.
 
 ## Decisions log
 
@@ -80,6 +87,9 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 | 2026-11-11 | No-trade fill only between two archive rows; every synthetic run must be archive-bounded; merge precedence archive > synthetic > api | A forward-filled API gap must never pass validation |
 | 2026-11-11 | Overlap tick read from public market metadata (`load_markets`), only when merging into an existing cache; float epsilon = 1e-6 × tick | CON-03; offline imports report the real error; tolerance must not grow with price |
 | 2026-11-11 | `data.history_start: 2017-01-01` provisional (synthetic-ratio cap 0.1% applies from it) | Cannot be measured until the full archive is imported; to be fixed before any backtest |
+| 2026-11-12 | **Keep `data.history_start: 2017-01-01`** (provisional until M1 review): measured 1d 0.028% / 4h 0.051% synthetic from it (cap 0.1%), ~8.9 years before the holdout; earlier years have dense 2013 gaps | Measured on the full archive; chosen on data quality only, before any backtest |
+| 2026-11-12 | Split archive imported in place (`ConcatReader`), never reassembled | 23 GB free disk; reassembly would need ~9.5 GB more |
+| 2026-11-12 | 15m left at the API week; no config change to pass its 0.163% ratio | Changing the cap or start date is an operator decision |
 | 2026-11-11 | `bot data audit-gaps` prints NOT AUDITABLE / PARTIAL COVERAGE instead of "no gaps" when the cache does not cover the window | An absent archive must never look like a clean audit |
 | 2026-11-11 | Interpretation (flag at review): `validate` exit 0 for 15m covers only the API week; 15m import of Q3 fails loudly on the Oct 2026 download gap, by design | AD-18: download gaps always fail |
 
