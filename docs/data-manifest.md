@@ -40,6 +40,11 @@ Local path of each part: `data/raw/kraken_ohlcvt_full/Kraken_OHLCVT_Full.zip.par
 | part03 | https://assets.kraken.com/marketing/institutions/Kraken_OHLCVT_Full.zip.part03 | 2097152000 | `3fa1fdfbb94c5a3cc861068a11b5c309502a8ac8da0f4c6f091c5a2968451157` |
 | part04 | https://assets.kraken.com/marketing/institutions/Kraken_OHLCVT_Full.zip.part04 | 1157945626 | `db2c8b80c92a2e09b3f71f464b0b55574bd56c645d2560169dbbe4887b9c00eb` |
 
+Verification record: on 2026-11-12 `bot data import-archive` (commit ddab312) read the 5
+local parts in place and confirmed, before parsing, that every part matches its published
+SHA-256 above and that the concatenation matches the published whole-archive SHA-256. The
+archive's XBTEUR data turned out to reach 2026-09-30 (the support page says 2026-06-30).
+
 Total 9546553626 bytes (the last part is shorter than the others; an earlier version of this
 manifest wrongly said 5 x 2097152000).
 
