@@ -16,8 +16,8 @@ followup_review_recommended: false
 context: []
 warnings: []
 deferred: []
-blocked_at: "2026-11-11"
-blocked_reason: "Operator must download+import the full Kraken OHLCVT archive (~10 GB, docs/data-manifest.md); 15m also lacks 2026-10-01..2026-11-03 until Kraken publishes Q4 2026"
+blocked_at: "2026-11-12"
+blocked_reason: "1d/4h done (full archive 2013-09-10..2026-11). 15m only: download gap 2026-10-01..2026-11-03 (no official source until Kraken Q4 2026 file) and 15m synthetic ratio 0.163% from 2017 > 0.1% cap; operator decision"
 ---
 
 <intent-contract>
