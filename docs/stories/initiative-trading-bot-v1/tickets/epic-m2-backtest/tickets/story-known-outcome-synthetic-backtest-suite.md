@@ -50,3 +50,8 @@ Verify: `pytest tests/backtest/test_known_outcomes.py` passes and covers rising,
 ## Notes
 
 - Assumption: criteria drafted headless by Sofia on 2026-11-11 from the PRD, architecture and PROGRESS.md; awaiting operator approval (then `refined: true`).
+
+## Added from M1 audit (2026-11-12)
+
+- **Known real-data outlier (audit M1 F-3).** 2018-01-13 daily open/high is set by a single ~20,000 EUR trade after an outage, versus ~11,500 surrounding prices. The backtest report must not silently depend on it: signals use closes; any fill simulated on that candle's high is flagged in the report. Add a regression check that the 2018-01-13 candle is listed in the report's data-anomaly section.
+- **Clock skew (audit M1 F-4)** stays deferred to M3 (engine startup check).

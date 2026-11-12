@@ -61,3 +61,7 @@ Verify: FakeClock tests on synthetic 15m candles: fill on strict trade-through, 
 
 - High risk: execution drift between modes breaks GL-02. Extra check: the M3 backtest-vs-paper consistency test (4.9).
 - Assumption: criteria drafted headless by Sofia on 2026-11-11 from the PRD, architecture and PROGRESS.md; awaiting operator approval (then `refined: true`).
+
+## Added from M1 audit (2026-11-12)
+
+- **Synthetic candles are non-fillable (audit M1 F-2).** Flat candles flagged `synthetic` (no-trade periods) also cover Kraken trading halts (e.g. 2024-01-20, 2024-04-14, 2025-11-01, 5–7 h each). The fill simulator must never fill a resting order against a synthetic candle; a window made only of synthetic candles ends as "not filled". Test with a fixture containing a synthetic run inside the execution window.

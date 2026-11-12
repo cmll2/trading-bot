@@ -51,6 +51,9 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 2. Keep `bot data update` running at least weekly (15m API window ≈ 7.5 days); if it lapses, `bot data backfill-trades` closes the hole.
 3. M2 (after review): backtests use 1d from `data.history_start`; holdout 2025-11-11 → 2026-11-10 stays untouched until the single holdout run.
 
+- 2026-11-12 — **M1 independently audited: PASS with findings** (`docs/audits/M1-audit.md`). 596 tests pass. Real cache validated: 1d 2013-09-10→2026-11-11 (4,811 rows), 4h →2026-11-12 (28,866), 15m →2026-11-12 (461,849); all 720 recent 1d/4h candles match Kraken's public OHLC exactly. Findings handled: F-1 15m cap tightened 0.5%→0.25% (fc7621f); F-2 (synthetic candles also cover trading halts → non-fillable) and F-3 (2018-01-13 outlier) added to M2 stories; F-4 clock skew deferred to M3. Raw archive parts (9.5 GB) deleted after audit; re-downloadable from URLs + SHA-256 in `docs/data-manifest.md`.
+- **Awaiting operator review of M1** (branch `m1-data`, not merged).
+
 ## Decisions log
 
 | Date | Decision | Reason |
@@ -97,6 +100,7 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 | 2026-11-11 | No-trade fill only between two archive rows; every synthetic run must be archive-bounded; merge precedence archive > synthetic > api | A forward-filled API gap must never pass validation |
 | 2026-11-11 | Overlap tick read from public market metadata (`load_markets`), only when merging into an existing cache; float epsilon = 1e-6 × tick | CON-03; offline imports report the real error; tolerance must not grow with price |
 | 2026-11-11 | `data.history_start: 2017-01-01` provisional (synthetic-ratio cap 0.1% applies from it) | Cannot be measured until the full archive is imported; to be fixed before any backtest |
+| 2026-11-12 | 15m synthetic cap 0.25% (supersedes 0.5%) | Audit M1 F-1: 0.5% was ~3× measured 0.162%; tighter cap still passes |
 | 2026-11-12 | **Keep `data.history_start: 2017-01-01`** (provisional until M1 review): measured 1d 0.028% / 4h 0.051% synthetic from it (cap 0.1%), ~8.9 years before the holdout; earlier years have dense 2013 gaps | Measured on the full archive; chosen on data quality only, before any backtest |
 | 2026-11-12 | Split archive imported in place (`ConcatReader`), never reassembled | 23 GB free disk; reassembly would need ~9.5 GB more |
 | 2026-11-12 | ~~15m left at the API week; no config change to pass its 0.163% ratio~~ (superseded by the coordinator decisions below) | Changing the cap or start date is an operator decision |
