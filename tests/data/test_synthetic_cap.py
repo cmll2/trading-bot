@@ -48,7 +48,7 @@ def _archive_with_holes(tf: str, n: int, holes: int) -> pd.DataFrame:
 
 def test_repo_config_sets_15m_cap_only() -> None:
     s = load_settings(REPO_ROOT / "config.yaml", REPO_ROOT / "no-such.env")
-    assert s.data.synthetic_cap("15m") == Decimal("0.005")
+    assert s.data.synthetic_cap("15m") == Decimal("0.0025")
     assert s.data.synthetic_cap("1d") == Decimal("0.001")
     assert s.data.synthetic_cap("4h") == Decimal("0.001")
     assert s.data.history_start.isoformat() == "2017-01-01"
