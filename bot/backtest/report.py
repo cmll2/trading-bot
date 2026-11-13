@@ -224,6 +224,27 @@ def render_markdown(p: dict[str, Any]) -> str:
                 f"| {f['fills']} |"
             )
         lines.append("")
+    d = p.get("diagnostics", {}).get("no_abs_position_cap")
+    if d:
+        lines += [f"## {d['label']}", "", d["note"], ""]
+        lines += [
+            "| Fee rate | Metric | Strategy (no abs cap) | Buy-and-hold |",
+            "|---|---|---|---|",
+        ]
+        for variant in ("maker", "taker"):
+            s, b = d[variant]["strategy"], d[variant]["buy_and_hold"]
+            rows = (
+                ("Total return", "total_return", _pct),
+                ("Annualized return", "annualized_return", _pct),
+                ("Max drawdown", "max_drawdown", lambda v: f"{v:.2%}"),
+                ("Sharpe", "sharpe", lambda v: f"{v:.2f}"),
+                ("Total fees (EUR)", "total_fees", lambda v: f"{v:.2f}"),
+                ("Final equity (EUR)", "final_equity", lambda v: f"{v:.2f}"),
+            )
+            for name, key, fmt in rows:
+                lines.append(f"| {variant} | {name} | {fmt(s[key])} | {fmt(b[key])} |")
+            lines.append(f"| {variant} | Halts | {d[variant]['halts'] or 'none'} | - |")
+        lines.append("")
     lines += ["## Data anomalies", ""]
     if p["data_anomalies"]:
         for a in p["data_anomalies"]:

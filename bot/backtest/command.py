@@ -14,6 +14,9 @@ from typing import Any
 
 from bot.backtest import dataset as dataset_mod
 from bot.backtest.dataset import anomalies_in
+from bot.backtest.diagnostic import LABEL as DIAG_LABEL
+from bot.backtest.diagnostic import NO_ABS_CAP, limits_without_abs_cap
+from bot.backtest.diagnostic import NOTE as DIAG_NOTE
 from bot.backtest.holdout import (
     ChangeRefused,
     HoldoutRefused,
@@ -80,7 +83,7 @@ def caveats(settings: Settings, holdout_run: bool = False) -> list[str]:
         f"Positions are capped by the protected risk limit max_position_abs_quote (EUR "
         f"{r.max_position_abs_quote}): once equity grows past it, re-entries invest at most "
         f"that amount while buy-and-hold keeps its whole initial stake invested (it buys "
-        f"once and holds).",
+        f"once and holds). The DIAGNOSTIC section shows the same strategy without that cap.",
         "Exchange minimums and precision come from one public market snapshot and are "
         "applied to the whole history; historical minimums differed.",
         f"Fees are Kraken's published entry tier (maker {settings.fees.maker}, taker "
@@ -209,6 +212,23 @@ def _execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict
     taker_block = _metrics(
         settings, taker, settings.fees.taker, settings.execution.sim_half_spread_bps
     )
+    # Audit M2 F-4: fixed diagnostic, not a configuration tried, never used to decide.
+    diag_limits = limits_without_abs_cap(settings.risk)
+    diag = {}
+    for variant, fee, half in (
+        ("maker", settings.fees.maker, Decimal(0)),
+        ("taker", settings.fees.taker, settings.execution.sim_half_spread_bps),
+    ):
+        run = run_backtest(
+            settings, ds, variant, strategy_id=req.strategy_id, first_tick_at=eval_floor,
+            limits=diag_limits,
+        )  # fmt: skip
+        block = _metrics(settings, run, fee, half)
+        diag[variant] = {
+            "strategy": block["strategy"],
+            "buy_and_hold": block["buy_and_hold"],
+            "halts": block["halts"]["count_by_rule"],
+        }
     runs = holdout_runs(settings, req.strategy_id)
     reruns = [r for r in runs if r.get("rerun")]
     payload: dict[str, Any] = {
@@ -287,6 +307,15 @@ def _execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict
             if settings.backtest.simulated_halt_reset == "next_daily_close"
             else "the run ends at the first protected halt"
         ),
+        "diagnostics": {
+            "no_abs_position_cap": {
+                "label": DIAG_LABEL,
+                "note": DIAG_NOTE,
+                "counts_as_configuration_tried": False,
+                "max_position_abs_quote": str(NO_ABS_CAP),
+                **diag,
+            }
+        },
         "data_anomalies": anomaly_block(anomalies_in(ds), {"maker": maker, "taker": taker}),
         "caveats": caveats(settings, req.holdout),
     }

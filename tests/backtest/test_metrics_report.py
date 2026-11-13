@@ -198,3 +198,33 @@ def test_anomaly_flag_covers_fills_on_the_day_after_the_bad_candle() -> None:
     run = _run(["20", "20"], ["1", "1"], ["0", "0"], fills)
     out = anomaly_block([{"date": "2018-01-13", "note": "x"}], {"maker": run})
     assert out[0]["flag"] == "FILL SIMULATED ON THIS DAY" and out[0]["fills_on_day"]["maker"] == 1
+
+
+def test_every_report_carries_the_no_abs_cap_diagnostic_not_counted_as_a_trial(tmp_path) -> None:
+    env = make_env(tmp_path, RISE_FALL, wiggle=0.005, initial_quote="100")  # above EUR 25
+    _, md, p = _execute(env)
+    d = p["diagnostics"]["no_abs_position_cap"]
+    assert d["label"].startswith("DIAGNOSTIC (not used for any decision)")
+    assert d["counts_as_configuration_tried"] is False and p["configurations_tried"] == 1
+    for variant in ("maker", "taker"):
+        assert set(d[variant]) == {"strategy", "buy_and_hold", "halts"}
+        # With EUR 100 the EUR 25 cap binds: without it the strategy invests more.
+        capped = p["results"][variant]["strategy"]["turnover"]
+        assert d[variant]["strategy"]["turnover"] > capped
+    text = md.read_text("utf-8")
+    assert "## DIAGNOSTIC (not used for any decision): v0 without the EUR 25 absolute" in text
+    assert "Not a configuration tried" in text
+    # The real limits object is untouched.
+    assert env.settings.risk.max_position_abs_quote == Decimal("25")
+
+
+def test_only_the_backtest_command_uses_the_diagnostic_limits() -> None:
+    """The uncapped limits object can never reach dry-run/live code paths (SAF-05)."""
+    from tests.conftest import REPO_ROOT
+
+    users = sorted(
+        p.relative_to(REPO_ROOT).as_posix()
+        for p in (REPO_ROOT / "bot").rglob("*.py")
+        if "limits_without_abs_cap" in p.read_text("utf-8")
+    )
+    assert users == ["bot/backtest/command.py", "bot/backtest/diagnostic.py"]
