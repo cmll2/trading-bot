@@ -1,0 +1,17 @@
+{
+  "comment": "Recorded snapshot of Kraken PUBLIC market metadata (unauthenticated AssetPairs via ccxt kraken.load_markets). Used by the backtest for minimums and precision (CON-03, FR-13). Minimums change over time: historical periods are simulated with today's rules.",
+  "fetched_at": "2026-11-13",
+  "source": "ccxt 4.5.92 kraken.load_markets() (public AssetPairs)",
+  "markets": {
+    "BTC/EUR": {
+      "id": "XXBTZEUR",
+      "base": "BTC",
+      "quote": "EUR",
+      "active": true,
+      "status": "online",
+      "precision": {"amount": "0.00000001", "price": "0.1"},
+      "limits": {"amount_min": "0.00006", "cost_min": "0.45"},
+      "info": {"altname": "XBTEUR", "ordermin": "0.00006", "costmin": "0.45", "tick_size": "0.1", "lot_decimals": 8, "pair_decimals": 1, "cost_decimals": 5, "status": "online"}
+    }
+  }
+}

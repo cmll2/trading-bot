@@ -26,12 +26,14 @@ import argparse
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from bot.backtest import command as backtest_command
 from bot.clock import Clock, SystemClock
 from bot.config import (
     DEFAULT_CONFIG_PATH,
@@ -123,6 +125,22 @@ def _parser() -> argparse.ArgumentParser:
         p.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
         p.add_argument("--env-file", type=Path, default=DEFAULT_ENV_PATH)
         p.add_argument("--strategy", default=None, help="strategy id (default: config)")
+        if name == "backtest":
+            p.add_argument(
+                "--start",
+                type=date.fromisoformat,
+                default=None,
+                help="first day, UTC (default: data.history_start)",
+            )
+            p.add_argument(
+                "--end",
+                type=date.fromisoformat,
+                default=None,
+                help="end day, exclusive, UTC (default: backtest.holdout_start; never later)",
+            )
+            p.add_argument(
+                "--results-dir", type=Path, default=None, help="default: backtest.results_dir"
+            )
         if name == "live":
             p.add_argument("--live", action="store_true", help="required to run live")
 
@@ -385,6 +403,32 @@ def _import_archive_command(
     return EXIT_OK
 
 
+def _backtest_command(args: argparse.Namespace, settings: Settings, strategy_id: str) -> int:
+    """``bot backtest`` (M2): results file + report; the holdout is excluded by default."""
+    req = backtest_command.default_request(settings, strategy_id, _clock_factory().now().date())
+    req = replace(
+        req,
+        start=args.start or req.start,
+        end=args.end or req.end,
+        results_dir=args.results_dir or req.results_dir,
+    )
+    try:
+        json_path, md_path, _ = backtest_command.execute(settings, req)
+    except backtest_command.BacktestRefused as exc:
+        _err(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    except NotImplementedError as exc:
+        _err(f"{exc}")
+        return EXIT_NOT_IMPLEMENTED
+    except (DataValidationError, OSError) as exc:
+        _err(f"DATA ERROR: {exc}")
+        return EXIT_DATA_ERROR
+    print(md_path.read_text(encoding="utf-8").splitlines()[0])
+    print(f"results: {json_path}")
+    print(f"report:  {md_path}")
+    return EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     args = _parser().parse_args(argv)
     env = dict(os.environ) if env is None else env
@@ -422,6 +466,8 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     except StrategyNotAllowed as exc:
         _err(f"REFUSED: {exc}")
         return EXIT_REFUSED
+    if mode == "backtest":
+        return _backtest_command(args, settings, strategy_id)
     _err(f"{mode} is not implemented yet (M0 scaffold)")
     return EXIT_NOT_IMPLEMENTED
 

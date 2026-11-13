@@ -16,19 +16,22 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol
 
+import numpy as np
 import pandas as pd
 
 from bot.candles import CandleHistory
 from bot.clock import Clock
-from bot.config import DataSettings
+from bot.config import TIMEFRAME_SECONDS, DataSettings
 from bot.data.cache import cache_path, data_hash
 from bot.data.validate import DataValidationError, read_cache_checked, validate_frame
 
 
 class MarketData(Protocol):
-    """Source of closed candles. Tickers arrive with the engine at M3."""
+    """Source of closed candles. Tickers come from the Broker port (``get_ticker``)."""
 
-    def closed_candles(self, pair: str, timeframe: str) -> CandleHistory: ...
+    def closed_candles(
+        self, pair: str, timeframe: str, limit: int | None = None
+    ) -> CandleHistory: ...
 
 
 class ReplayMarketData:
@@ -49,6 +52,25 @@ class ReplayMarketData:
         self._data_settings = data_settings
         self._frames: dict[tuple[str, str], pd.DataFrame] = {}
         self._hashes: dict[tuple[str, str], str] = {}
+        self._open_ns: dict[tuple[str, str], np.ndarray] = {}
+
+    @classmethod
+    def from_frames(
+        cls,
+        frames: dict[tuple[str, str], pd.DataFrame],
+        clock: Clock,
+        data_settings: DataSettings,
+    ) -> ReplayMarketData:
+        """Serve already loaded and validated frames (backtest dataset, AD-4).
+
+        The frames are the caller's (``bot.backtest.dataset``); they are not re-read from
+        disk, so whatever the dataset loader produced is exactly what every consumer sees.
+        """
+        md = cls(Path("."), sorted({p for p, _ in frames}), clock, data_settings)
+        for key, frame in frames.items():
+            md._frames[key] = frame
+            md._hashes[key] = data_hash(frame)
+        return md
 
     def _frame(self, pair: str, timeframe: str) -> pd.DataFrame:
         if pair not in self._pairs:
@@ -69,8 +91,19 @@ class ReplayMarketData:
             self._hashes[key] = data_hash(frame)
         return self._frames[key]
 
-    def closed_candles(self, pair: str, timeframe: str) -> CandleHistory:
-        return CandleHistory.from_frame(self._frame(pair, timeframe), timeframe, self._clock.now())
+    def closed_candles(self, pair: str, timeframe: str, limit: int | None = None) -> CandleHistory:
+        """Candles closed at the clock time; with ``limit``, only the newest ``limit``."""
+        frame = self._frame(pair, timeframe)
+        key = (pair, timeframe)
+        if key not in self._open_ns:
+            ns = frame["open_at"].dt.tz_convert("UTC").dt.as_unit("ns").astype("int64")
+            self._open_ns[key] = ns.to_numpy()
+        now = self._clock.now()
+        # Rows with open_at + interval <= now; CandleHistory.from_frame re-checks exactly.
+        cutoff = pd.Timestamp(now).as_unit("ns").value - TIMEFRAME_SECONDS[timeframe] * 10**9
+        stop = int(np.searchsorted(self._open_ns[key], cutoff, side="right"))
+        start = 0 if limit is None else max(0, stop - limit)
+        return CandleHistory.from_frame(frame.iloc[start:stop], timeframe, now)
 
     def data_hash(self, pair: str, timeframe: str) -> str:
         """sha256 hex of the whole cached frame served for (pair, timeframe)."""

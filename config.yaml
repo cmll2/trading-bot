@@ -1,6 +1,7 @@
 # trading-bot configuration. Loaded once, read-only, by bot/config.py into a frozen Settings.
-# Exchange minimums, precision and fee rates are NOT set here: they are read from the
-# exchange at startup (CON-03). Secrets are NOT here: .env holds only the path to a
+# Exchange minimums and precision are NOT set here: they are read from the exchange's
+# market metadata (CON-03; backtest: the recorded public snapshot in bot/backtest/). Fee
+# rates: see `fees:` below. Secrets are NOT here: .env holds only the path to a
 # secrets file outside the repository (SAF-01).
 
 exchange:
@@ -16,6 +17,10 @@ fiat_currencies:
 strategy:
   id: v0_trend
   timeframe: 1d
+  # v0 parameters, fixed 2026-11-13 BEFORE any evaluation (FR-07), never tuned: long when
+  # the last CLOSED daily close > SMA(sma_days) of daily closes, flat otherwise.
+  params:
+    sma_days: 200
 
 capital:
   allocated_quote: "20"   # EUR the bot may use live (AD-26)
@@ -28,7 +33,20 @@ execution:
   approval: manual                  # manual | autonomous (AD-16)
   window_hours: 6                   # after the daily close (00:00 UTC)
   reprice_interval_minutes: 30
+  completion_window_hours: 24       # buy completion phase after the window (AD-28)
+  sim_timeframe: 15m                # execution candles for fill simulation (AD-6)
+  sim_half_spread_bps: "1"          # backtest bid/ask = last 15m close -/+ this (AD-6)
+  tick_seconds: 30                  # engine tick; also the backtest order-placement lag
   # per-intent and daily submission caps are protected: see risk:
+
+# Kraken's PUBLISHED entry-tier spot fees (schedule as of 2026-11), used by backtest and
+# dry-run. The account's real tier can only be read with an authenticated call
+# (fetch_trading_fee), forbidden during development: it is verified against these values
+# at live startup (M6), which refuses to start if the API rates exceed them.
+fees:
+  maker: "0.0040"
+  taker: "0.0080"
+  source: published_schedule
 
 slippage_bps: 5                     # configurable slippage assumption (CON-04)
 
@@ -36,6 +54,13 @@ backtest:
   # Fixed holdout window (UTC, inclusive), frozen; never moves (FR-15, FR-16).
   holdout_start: 2025-11-11
   holdout_end: 2026-11-10
+  results_dir: results              # committed results + holdout_runs.jsonl (AD-21)
+  lookahead_cutpoints: 12           # prefix-invariance reruns per backtest (AD-4)
+  lookahead_seed: 20261113
+  bootstrap_resamples: 2000         # Sharpe CI: moving-block bootstrap of daily returns
+  bootstrap_block_days: 20
+  bootstrap_seed: 20261113
+  walk_forward_fold_days: 365       # consecutive out-of-sample folds before the holdout
 
 review:
   # GL-02 tolerances.

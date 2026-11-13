@@ -7,9 +7,10 @@ live only if it is in ``LIVE_STRATEGIES`` AND declares ``"live"`` in ``allowed_m
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import MappingProxyType
 
-from bot.strategy.base import Mode
+from bot.strategy.base import Mode, Strategy
 from bot.strategy.plumbing import Plumbing
 from bot.strategy.v0_trend import V0Trend
 
@@ -25,6 +26,12 @@ BACKTEST_STRATEGIES = DRY_RUN_STRATEGIES
 _BY_MODE = MappingProxyType(
     {"backtest": BACKTEST_STRATEGIES, "dry-run": DRY_RUN_STRATEGIES, "live": LIVE_STRATEGIES}
 )
+
+
+def build(strategy_id: str, params: Mapping[str, int], mode: Mode) -> Strategy:
+    """The only way to construct a strategy (AD-3): mode-checked class + frozen params."""
+    cls = strategy_class_for(strategy_id, mode)
+    return cls(dict(params))
 
 
 def strategy_class_for(strategy_id: str, mode: Mode) -> type:

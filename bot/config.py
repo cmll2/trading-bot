@@ -54,6 +54,8 @@ class ExchangeSettings(_Frozen):
 class StrategySettings(_Frozen):
     id: str
     timeframe: Literal["15m", "1h", "4h", "1d"]
+    # Explicit, fixed strategy parameters (FR-07); passed to strategy.registry.build.
+    params: dict[str, int] = Field(default_factory=dict)
 
 
 class CapitalSettings(_Frozen):
@@ -70,12 +72,32 @@ class ExecutionSettings(_Frozen):
     approval: Literal["manual", "autonomous"]  # AD-16
     window_hours: int = Field(gt=0)
     reprice_interval_minutes: int = Field(gt=0)
+    completion_window_hours: int = Field(gt=0)  # AD-28 buy completion phase
+    sim_timeframe: Literal["15m"]  # AD-6 execution candles
+    sim_half_spread_bps: Decimal = Field(ge=0, lt=100)  # AD-6 backtest bid/ask
+    tick_seconds: int = Field(gt=0, le=900)  # AD-29 engine tick / backtest placement lag
     # Submission caps (per intent and per day) live in the protected risk: section.
+
+
+class FeeSettings(_Frozen):
+    """Published entry-tier rates for backtest and dry-run (Conventions: Fees). Live checks
+    them against ``fetch_trading_fee`` at startup and refuses if the API rates exceed them."""
+
+    maker: Decimal = Field(ge=0, lt=Decimal("0.05"))
+    taker: Decimal = Field(ge=0, lt=Decimal("0.05"))
+    source: Literal["published_schedule"]
 
 
 class BacktestSettings(_Frozen):
     holdout_start: date  # FR-15: fixed window, UTC, inclusive
     holdout_end: date
+    results_dir: Path  # AD-21; resolved against the config file's directory
+    lookahead_cutpoints: int = Field(gt=0, le=100)  # AD-4
+    lookahead_seed: int
+    bootstrap_resamples: int = Field(ge=100)  # FR-21
+    bootstrap_block_days: int = Field(gt=0)
+    bootstrap_seed: int
+    walk_forward_fold_days: int = Field(ge=30)  # FR-15
 
     @model_validator(mode="after")
     def _ordered(self) -> BacktestSettings:
@@ -146,6 +168,7 @@ class Settings(_Frozen):
     capital: CapitalSettings
     paper: PaperSettings
     execution: ExecutionSettings
+    fees: FeeSettings
     slippage_bps: Decimal = Field(ge=0)
     backtest: BacktestSettings
     review: ReviewSettings
@@ -238,6 +261,10 @@ def load_settings(
     if "var_dir" in paths:
         paths["var_dir"] = _absolute(Path(paths["var_dir"]), base_dir)
     data["paths"] = paths
+    backtest = dict(data.get("backtest") or {})
+    if "results_dir" in backtest:
+        backtest["results_dir"] = _absolute(Path(backtest["results_dir"]), base_dir)
+    data["backtest"] = backtest
 
     env = _read_env_file(env_path)
     data["secrets_file"] = _secrets_path(env.get(SECRETS_FILE_ENV, ""), repo_root)

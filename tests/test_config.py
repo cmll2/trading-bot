@@ -78,8 +78,21 @@ def test_paths_are_resolved_to_absolute(repo: Path) -> None:
 
 def test_config_has_no_hardcoded_minimums_or_fees() -> None:
     text = (REPO_ROOT / "config.yaml").read_text(encoding="utf-8").lower()
-    for word in ("amount_min", "cost_min", "tick_size", "maker", "taker", "min_order"):
+    for word in ("amount_min", "cost_min", "tick_size", "min_order"):
         assert word not in text, word
+    # Fee rates live ONLY in the `fees:` section (coordinator decision 2026-11-13: published
+    # entry tier, verified against fetch_trading_fee at live startup); nowhere else.
+    raw = yaml.safe_load(text)
+    outside = {k: v for k, v in raw.items() if k != "fees"}
+    assert "maker" not in yaml.safe_dump(outside) and "taker" not in yaml.safe_dump(outside)
+
+
+def test_fees_are_kraken_published_entry_tier_with_source_label() -> None:
+    s = load_settings(REPO_ROOT / "config.yaml", REPO_ROOT / "no-such.env")
+    assert s.fees.maker == Decimal("0.0040")
+    assert s.fees.taker == Decimal("0.0080")
+    assert s.fees.source == "published_schedule"
+    assert s.strategy.params == {"sma_days": 200}
 
 
 def test_settings_are_frozen(repo: Path) -> None:

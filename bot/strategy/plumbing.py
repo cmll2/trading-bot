@@ -15,7 +15,11 @@ class Plumbing:
     id = "plumbing"
     timeframe = "15m"
     warmup = 0
+    implemented = False  # M3
     allowed_modes: frozenset[Mode] = frozenset({"backtest", "dry-run"})
+
+    def __init__(self, params: object = None) -> None:
+        self.params = params
 
     def on_candle(self, history: CandleHistory) -> TargetPosition:
         raise NotImplementedError("plumbing is implemented at M3 (FR-09)")
