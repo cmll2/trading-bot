@@ -134,7 +134,7 @@ def require_approved(req: OrderRequest, decision: RiskDecision | None) -> None:
 
 
 class Broker(Protocol):
-    """Implemented by KrakenBroker (M6), PaperBroker (M3) and FakeBroker (tests)."""
+    """Implemented by KrakenBroker (M6), PaperBroker (M2) and FakeBroker (tests)."""
 
     name: str  # "kraken" | "paper" | "fake"
 

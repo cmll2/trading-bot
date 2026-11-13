@@ -2,6 +2,9 @@
 
 Subcommands in M0: ``backtest``, ``dry-run``, ``live``. All are stubs that validate the
 configuration and the strategy/mode combination, then exit with "not implemented".
+M2: ``bot backtest`` is implemented (``bot.backtest.command``): one command, holdout excluded
+by default, look-ahead guard (exit 5 on a leak), ``--holdout`` for the single registered
+holdout run, ``--change N``. ``dry-run`` and ``live`` remain stubs.
 
 M1 adds ``bot data update`` and ``bot data validate`` (AD-18): public, unauthenticated
 candle download into the local Parquet cache, and its validation. M1 story 3 adds

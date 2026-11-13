@@ -6,8 +6,9 @@ adapter's clock time; the caller never passes a time, so no caller can ask for t
 ``ReplayMarketData`` serves the local Parquet cache (backtest, AD-1). Each (pair, timeframe)
 file is read once, validated with ``validate_frame`` (fail loudly, never repair) and hashed
 with ``data_hash`` (NFR-02, AD-21). The cache may hold candles after the clock time: the
-closed filter of ``CandleHistory`` hides them. ``CcxtMarketData`` (dry-run, live) arrives
-with the engine at M3.
+closed filter of ``CandleHistory`` hides them. ``from_frames`` serves the backtest
+dataset's frames only (never the disk). Tickers come from the Broker port.
+``CcxtMarketData`` (dry-run, live) arrives at M3.
 """
 
 from __future__ import annotations

@@ -6,7 +6,6 @@ Default range: ``data.history_start`` (inclusive) to ``backtest.holdout_start``
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -32,10 +31,6 @@ from bot.backtest.results import results_stem, write_results
 from bot.backtest.runner import InsufficientData, RunResult, run_backtest
 from bot.config import Settings
 from bot.strategy.registry import build
-
-EXIT_OK = 0
-EXIT_REFUSED = 2
-EXIT_DATA_ERROR = 4
 
 
 class BacktestRefused(Exception):
@@ -282,10 +277,6 @@ def execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict[
         stem += "_HOLDOUT"
     j, m = write_results(req.results_dir, stem, payload, render_markdown(payload))
     return j, m, payload
-
-
-def print_err(msg: str) -> None:
-    print(msg, file=sys.stderr)
 
 
 __all__ = ["BacktestRefused", "BacktestRequest", "default_request", "execute"]
