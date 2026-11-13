@@ -76,6 +76,7 @@ class ExecutionSettings(_Frozen):
     sim_timeframe: Literal["15m"]  # AD-6 execution candles
     sim_half_spread_bps: Decimal = Field(ge=0, lt=100)  # AD-6 backtest bid/ask
     tick_seconds: int = Field(gt=0, le=900)  # AD-29 engine tick / backtest placement lag
+    fill_settle_timeout_seconds: int = Field(gt=0, le=3600)  # AD-27
     # Submission caps (per intent and per day) live in the protected risk: section.
 
 

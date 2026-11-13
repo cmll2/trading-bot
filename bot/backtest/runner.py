@@ -124,7 +124,8 @@ def run_backtest(
     # Last daily-close tick whose execution window still fits inside the data:
     # close + window <= end  <=>  tick (= close + lag) <= end - window + lag.
     last_signal_tick = dataset.end - window + lag
-    hard_end = _floor(last_signal_tick, day) + window + step + lag
+    completion = timedelta(hours=settings.execution.completion_window_hours)
+    hard_end = _floor(last_signal_tick, day) + window + completion + step + lag
     t, last_tick = first, first
     halted = False
     while t <= hard_end and (stop_after is None or t <= stop_after):
@@ -170,6 +171,7 @@ def backtest_engine_config(
         config_hash=config_hash(settings),
         limits_hash=limits_hash(settings),
         pricing="passive" if variant == "maker" else "aggressive",
+        fill_settle_timeout=timedelta(seconds=settings.execution.fill_settle_timeout_seconds),
     )
 
 
@@ -198,8 +200,8 @@ def _collect(
     fills = [
         dict(r)
         for r in store.all(
-            "SELECT at, side, qty, price, fee, liquidity, reference_price FROM fills "
-            "ORDER BY at, fill_id"
+            "SELECT f.at, f.side, f.qty, f.price, f.fee, f.liquidity, f.reference_price, "
+            "o.limit_price FROM fills f JOIN orders o USING (order_id) ORDER BY f.at, f.fill_id"
         )
     ]
     equity = [

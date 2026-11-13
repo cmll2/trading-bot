@@ -3,7 +3,7 @@ title: 'Post-only execution window with re-pricing and cancel-and-skip'
 type: feature
 ticket: '6'
 created: '2026-11-13'
-status: in-review
+status: built
 baseline_revision: 'fb93518'
 route: full
 route_source: auto
@@ -12,7 +12,7 @@ review: quick
 review_source: pinned
 lenses_ran: [quick]
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: []
 warnings: []
 deferred: []
@@ -69,6 +69,26 @@ Implemented in the coordinator's main session. Bug found by the new taker test: 
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-11-13 — Review pass
+- verdicts: 10 findings — high 1, medium 4, low 4, false 1, maybe-false 0
+- findings:
+  - `[high]` `[patch]` completion shared the window's 12-submission count, so it could never run after a full window — completion phase counts its own submissions (`_phase_submissions`, still <= 12 and under the daily cap); risk rejections/unsizable completion orders wait instead of cancelling; test after 12 re-prices ends `dust`. Interpretation logged in PROGRESS.
+  - `[medium]` `[patch]` last allowed order cancelled for a 13th submission that cannot be sent — re-price skipped when the phase cap is reached; test.
+  - `[medium]` `[patch]` re-price after a cross reused the stale price — ticker re-fetched; an unmoved book waits for the next tick; test.
+  - `[medium]` `[patch]` AD-27 settle timeout missing — `execution.fill_settle_timeout_seconds: 60`; overdue `cancel_requested` halts `reconcile_mismatch`; test.
+  - `[medium]` `[patch]` completion-reached branch could finish with an unconfirmed cancel — finishes only once no live order remains.
+  - `[false]` `[reject]` sell-side dust not recorded at window end — already added in `_finish` by story 7 (9d71e81).
+  - `[low]` `[patch]` completion qty sized at mid could fall below cost_min at the bid — sized at the limit price.
+  - `[low]` `[patch]` backtest stopped before the last completion phase — hard end includes the completion window.
+  - `[low]` `[patch]` report text omitted the taker variant — the story 8 report shows both variants.
+  - `[low]` `[patch]` slippage test did not check maker slippage — fills now carry the order limit; test asserts price = limit x (1 ± 5 bp) and fee = qty x price x rate for both variants.
+
+## Auto Run Result
+
+- Summary: AD-5/AD-28 execution in the shared engine; one fill model; taker report variant; synthetic candles never fill.
+- Review: 9 patches, 0 deferred, 1 rejected. Follow-up review recommended: true (a high was patched) — named risk: completion-phase interpretation (own submission count) is a reading of AD-28 for the operator/audit to confirm.
+- Verification: `tests/backtest/test_execution.py` all pass; full check at commit.
 
 ## Verification
 

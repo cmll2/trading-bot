@@ -54,14 +54,15 @@ def _buy(equity: str, price: str = "40000", free: str | None = None, position: s
 # Hand-computed table (AD-13). qty = floor_1e-8(spend / (price x 1.004 x 1.0005)).
 # 1. EUR 20 flat:      spend 20 -> 20 / 40180.08 = 0.000497759.. -> 0.00049775
 # 2. EUR 100 equity:   cap EUR 25 -> 25 / 40180.08 = 0.000622198.. -> 0.00062219
-# 3. EUR 20, half in:  budget 20 - 0.00025 x 40000 = 10 -> 10 / 40180.08 -> 0.00024887
+# 3. EUR 20 after an unsellable partial fill of 0.00005 (the re-price path):
+#    budget 20 - 0.00005 x 40000 = 18 -> 18 / 40180.08 = 0.000447983.. -> 0.00044798
 # 4. EUR 2 at 40,000:  2 / 40180.08 = 0.0000497.. < amount_min 0.00006 -> below_minimum
 # 5. EUR 0.55 at 7000: qty 0.00007821 >= amount_min, cost 0.547 >= 0.45, but after a 25%
 #    loss 0.547 x 0.75 = 0.41 < 0.45: unsellable -> below_minimum
 TABLE = [
     ("20", "40000", "20", "0", Decimal("0.00049775")),
     ("100", "40000", "100", "0", Decimal("0.00062219")),
-    ("20", "40000", "10", "0.00025", Decimal("0.00024887")),
+    ("20", "40000", "18", "0.00005", Decimal("0.00044798")),
     ("2", "40000", "2", "0", "below_minimum"),
     ("0.55", "7000", "0.55", "0", "below_minimum"),
 ]
@@ -142,3 +143,64 @@ def test_backtest_logs_and_counts_a_below_minimum_signal(tmp_path) -> None:
     assert any(e["kind"] == "rejection" and e["rule"] == "minimums" for e in r.risk_events)
     assert r.orders == [] and r.fills == []
     _ = date
+
+
+def test_backtest_logs_an_unsellable_after_worst_loss_buy_as_below_minimum(tmp_path) -> None:
+    # Price ~5,000: 0.55 EUR buys 0.0001095 BTC (>= amount_min, cost 0.547 >= 0.45), but the
+    # sellable threshold is 0.45 / (5000 x 0.75) = 0.00012: refused, logged, nothing placed.
+    closes = [4500.0, 4500.0, 5000.0, 5000.0, 5000.0]
+    env = make_env(tmp_path, closes, sma_days=2, initial_quote="0.55")
+    ds = load_dataset(env.settings, env.start, end_date(env, len(closes)), ("1d", "15m"))
+    r = run_backtest(env.settings, ds, "maker")
+    sig = next(s for s in r.signals if s["candle_open_at"].startswith("2020-01-03"))
+    assert sig["outcome"] == "below_minimum" and "sellable" in sig["outcome_reason"]
+    assert any(e["kind"] == "rejection" and e["rule"] == "minimums" for e in r.risk_events)
+    assert r.orders == []
+
+
+def test_rules_are_re_read_for_each_intent(tmp_path) -> None:
+    from tests.backtest.test_execution import Harness
+
+    h = Harness(tmp_path)
+    calls = []
+    real = h.broker.load_market
+    h.broker.load_market = lambda pair: calls.append(pair) or real(pair)  # type: ignore[method-assign]
+    h.tick()
+    assert calls == ["BTC/EUR"]  # once for the buy intent created on this tick
+
+
+def test_partial_sell_leaving_dust_writes_a_dust_event(tmp_path) -> None:
+    from datetime import timedelta
+
+    from tests.backtest.test_execution import T15, Harness
+
+    h = Harness(tmp_path)
+    h.tick()
+    buy = h.broker.placed[0]
+    h.broker.fill(buy.cl_ord_id, buy.qty)
+    h.tick(T15)  # buy done
+    h.tick(timedelta(hours=24) - T15)  # day 4 00:00:30: day-3 close not above SMA -> sell
+    sell = h.broker.placed[-1]
+    assert sell.side == "sell" and sell.qty == buy.qty
+    h.broker.fill(sell.cl_ord_id, sell.qty - Decimal("0.00001"))  # leaves 0.00001 BTC
+    h.tick(timedelta(hours=6))  # window end
+    events = h.store.all("SELECT kind, rule FROM risk_events")
+    assert ("dust", "minimums") in [(e[0], e[1]) for e in events]
+
+
+def test_below_minimum_remainder_of_a_partial_buy_enters_completion(tmp_path, monkeypatch):
+    from datetime import timedelta
+
+    from tests.backtest.test_execution import Harness
+
+    h = Harness(tmp_path)
+    h.tick()
+    h.broker.fill(h.broker.placed[0].cl_ord_id, Decimal("0.00005"))  # unsellable partial
+    # The re-price remainder cannot be sized as a valid order (below the minimums).
+    monkeypatch.setattr(
+        h.engine, "_size", lambda *a: NoOrder("below_minimum", "remainder below amount_min")
+    )
+    h.tick(timedelta(minutes=30))
+    assert h.intent_state() == "completing"  # AD-13: the remainder goes to AD-28 completion
+    rows = h.store.all("SELECT kind, rule FROM risk_events")
+    assert ("rejection", "minimums") in [(r[0], r[1]) for r in rows]

@@ -270,8 +270,63 @@ def test_re_price_waits_for_the_cancel_and_fills_before_a_new_order(tmp_path) ->
 
 @pytest.mark.parametrize("variant", ["maker", "taker"])
 def test_every_simulated_fill_carries_fees_and_slippage(tmp_path, variant) -> None:
-    result, _ = _run(tmp_path, variant=variant, wiggle=0.003)
+    result, env = _run(tmp_path, variant=variant, wiggle=0.003)
     assert result.fills
+    rate = env.settings.fees.maker if variant == "maker" else env.settings.fees.taker
     for f in result.fills:
-        assert Decimal(f["fee"]) > 0
-        assert Decimal(f["price"]) != Decimal(f["reference_price"]) or variant == "maker"
+        limit, price = Decimal(f["limit_price"]), Decimal(f["price"])
+        slip = Decimal("1.0005") if f["side"] == "buy" else Decimal("0.9995")
+        assert price == limit * slip  # slippage against the trader, on the order's limit
+        assert Decimal(f["fee"]) == Decimal(f["qty"]) * price * rate
+
+
+def test_completion_runs_after_a_full_window_of_re_prices(tmp_path) -> None:
+    """The completion phase has its own submission count: after 12 window submissions
+    it still places completion orders, and ends as dust if it never reaches the threshold."""
+    h = Harness(tmp_path)
+    h.tick()
+    h.broker.fill(h.broker.placed[0].cl_ord_id, Decimal("0.00005"))
+    for _ in range(12):
+        h.tick(timedelta(minutes=30))  # re-price every 30 min through the window end
+    assert h.intent_state() == "completing"
+    before = len(h.broker.placed)
+    h.tick(T15)
+    assert len(h.broker.placed) == before + 1  # a completion order was placed
+    h.tick(timedelta(hours=24))
+    assert h.outcome() == "dust"
+
+
+def test_last_allowed_order_rests_until_the_window_end(tmp_path) -> None:
+    h = Harness(tmp_path)
+    h.broker.script_place("cross")  # burns one submission at 00:00:30 (re-priced at once)
+    h.tick()
+    for _ in range(11):
+        h.tick(timedelta(minutes=30))
+    assert h.store.one("SELECT count(*) FROM orders")[0] == 12
+    live = h.store.one("SELECT state FROM orders ORDER BY order_id DESC")[0]
+    assert live == "open"  # not cancelled for a 13th submission that cannot be sent
+    h.tick(timedelta(minutes=30))  # 06:00:30: window end
+    assert h.outcome() == "not_filled"
+
+
+def test_repeated_cross_with_an_unmoved_book_waits_for_the_next_tick(tmp_path) -> None:
+    h = Harness(tmp_path)
+    h.broker.script_place("cross", "cross", "cross")
+    h.tick()
+    assert len(h.broker.submitted) == 2  # first + one immediate re-price; then wait
+    assert h.intent_state() == "working"
+
+
+def test_unsettled_cancel_halts_with_reconcile_mismatch(tmp_path, monkeypatch) -> None:
+    h = Harness(tmp_path)
+    h.tick()
+    first = h.broker.placed[0]
+    monkeypatch.setattr(h.broker, "cancel_order", lambda pair, cl: None)  # never confirmed
+    h.tick(timedelta(minutes=30))
+    assert h.store.one("SELECT state FROM orders WHERE cl_ord_id = ?", (first.cl_ord_id,))[0] == (
+        "cancel_requested"
+    )
+    h.tick(timedelta(minutes=2))  # > 60 s after the cancel request: halt recorded
+    assert h.store.one("SELECT rule FROM halts")[0] == "reconcile_mismatch"
+    assert h.tick(T15).halted  # the next tick sweeps: trading stopped, intent halted
+    assert h.intent_state() == "halted"

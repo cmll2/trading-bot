@@ -37,6 +37,7 @@ execution:
   sim_timeframe: 15m                # execution candles for fill simulation (AD-6)
   sim_half_spread_bps: "1"          # backtest bid/ask = last 15m close -/+ this (AD-6)
   tick_seconds: 30                  # engine tick; also the backtest order-placement lag
+  fill_settle_timeout_seconds: 60   # cancel + fills must settle within this, else halt (AD-27)
   # per-intent and daily submission caps are protected: see risk:
 
 # Kraken's PUBLISHED entry-tier spot fees (schedule as of 2026-11), used by backtest and
