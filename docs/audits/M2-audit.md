@@ -239,3 +239,97 @@ I used the project's own pipeline (`load_dataset` → `run_backtest` → `strate
 ### Info
 - **F-9: execution assumptions applied to all history.** The 1 bp half spread and today's minimums are applied to 2017–2025. Spreads and minimums were wider early on, and the €25 cap and minimums interact. This is stated in the caveats.
 - **F-10: build pace.** M2 was built in about 1 hour of commit time (17:05–18:06), with review fixes partly in shared commits. The tests are substantive and the history is readable, but the operator's own read of the broker, engine and risk code (GL-05) matters more for that reason.
+
+## Re-audit after fixes
+
+- **Scope:** commits `d33e048` .. `7883a71` on `m2-backtest` (HEAD `7883a71`).
+- **Auditor:** the same independent auditor. I verified each fix from the code, from my own runs and from my own planted leaks, not from the builder's notes.
+- **Note:** the builder committed the first version of this report unchanged in `d347e93`.
+
+### Checks re-run by the auditor
+
+| Command | Result |
+|---|---|
+| `uv run ruff check .` | `All checks passed!` (exit 0) |
+| `uv run ruff format --check .` | `212 files already formatted` (exit 0) |
+| `uv run pytest -q` | `794 passed in 46.11s` (exit 0) |
+| `uv lock --check` | exit 0 |
+| `uv run bot backtest --results-dir <scratchpad>/bt2` | exit 0 |
+
+Notes on the backtest run:
+- No holdout mode was run, and `results/holdout_runs.jsonl` still does not exist.
+- The verdict line is unchanged: +689.4% vs +4495.1% at maker fees, +648.9% vs +4476.4% at taker fees.
+- My JSON is identical to the committed `results/2026-11-13_v0_trend_d347e934d423.json` apart from `git_commit`, `git_dirty` and `config_hash`. The working tree was clean, and no project file changed.
+
+### Git history (`d438403..7883a71`)
+
+- **Tests.** No test was deleted, skipped or xfailed.
+  - All 16 removed test lines are in `d33e048`, which carries the F-3 behaviour change.
+  - The per-phase test was replaced by `test_completion_after_a_full_window_is_a_new_intent_with_its_own_budget`, plus a new test, `test_completion_intent_counts_against_max_order_intents_per_day`.
+  - The schema-version asserts in `tests/test_store.py` changed from the literal `2` to `SCHEMA_VERSION + 1`, and a v1→v2 migration test was added.
+  - This is legitimate: the tests follow the new semantics, and none was weakened.
+- **Protected files.** No commit touches `bot/risk/` or `tests/risk/`.
+  - `config.yaml` changed only in `e9a0bca`, which adds `backtest.simulated_halt_reset`. The `risk:` section is byte-identical, and the limits hash is unchanged (`7193909…`).
+- **Dependencies, secrets, large data.** There is no new dependency, secret or large data file. The new results files are text, at most 943 lines.
+
+### Findings re-rated
+
+| Finding | Re-rating | Evidence |
+|---|---|---|
+| F-1 (High) halts not evaluated intraday | **FIXED** (the simulated-reset policy needs operator ratification, N-1) | See notes below. |
+| F-2 (Medium) guard misses an off-by-one adapter leak | **FIXED** | My planted leak A is now caught at two independent layers (see notes below). |
+| F-3 (Medium) per-phase budget reinterprets a protected limit | **FIXED** | See notes below. |
+| F-4 (Medium) no quantified cap diagnostic | **FIXED** | See notes below. |
+| F-5 (Low) resting order kept on own-feed staleness | **DEFERRED to M3, recorded** | `2b8cc77` adds the requirement to the M3 dry-run story. The backtest is unchanged, which is acceptable. |
+| F-6 (Low) guard compares targets only | **PARTIAL** | See notes below. |
+| F-7 (Low) duplicate run left untracked | **FIXED** | `d438403cae55.*` was committed in `d347e93`. PROGRESS.md lists all 3 real runs (same configuration), and the decisions log now requires every real run to be committed. |
+| F-8 (Low) fee decision governance | **OPEN, operator** | It is listed under "To ratify" in PROGRESS.md "Next". |
+| F-9 (Info) execution assumptions applied to all history | **FIXED** | `3e556c9` extends the caveat (0.002 BTC historical minimum, wider 2017–2018 spreads). |
+
+**F-1 notes:**
+- The runner now adds an engine tick at every 15m close where held equity can reach a halt threshold (`_HaltScan`, with a 0.1% margin). The engine still evaluates halts through the protected `evaluate_halts`.
+- On real data I ran the scan and the brute-force `intraday_ticks="every_15m"` mode side by side (`scan_eq.py`). Both give 31 identical halts and 76 identical fills, and the same final equity of €157.88 (scan 10 s, brute force 398 s).
+- The 31 halt dates in the report match my independent F-1 reconstruction exactly: the first is 2017-07-25 and the last 2021-05-19.
+- Every halt fell outside an execution window ("0 working intents halted"), and the modelled reset comes before the next signal. So the halts changed no trade, and the returns equal those of the first run.
+
+**F-2 notes:**
+- With the engine check in place, `Engine._check_closed` raises `FutureCandleError` on the first leaked candle, and `execute` turns it into `LookAheadError`, so no report is written.
+- With `_check_closed` disabled (`plant_leaks2.py`), the guard's new comparison by evaluation time catches the leak on its own: "signals evaluated by 2020-01-05T00:00:30 differ".
+- Regression tests plant the same leak: `tests/test_lookahead.py::test_planted_off_by_one_adapter_leak_is_caught_and_no_report_written` and `::test_guard_alone_catches_the_off_by_one_adapter_leak`.
+- My leak C (non-directional) is still caught.
+
+**F-3 notes:**
+- `_phase_submissions` is gone, and `RiskContext.intent_submissions` is now the intent's full count.
+- Completion is a new intent linked by `parent_intent_id` (migration 0002, with a CHECK that a completion intent can only be a buy with no signal).
+- That new intent counts against the protected `max_order_intents_per_day` (tested with a limit of 1), has its own 12-submission budget as an ordinary intent, and ends on any risk rejection, after which the parent's signal becomes `dust`.
+- The migration rebuilds `intents` with its unique index and runs a `foreign_key_check`. No triggers were lost, because 0001 put none on `intents`.
+- This uses the protected limits exactly as written.
+
+**F-4 notes:**
+- Every report now carries a section titled "DIAGNOSTIC (not used for any decision): v0 without the EUR 25 absolute position cap", at both rates.
+- It is written under `diagnostics` with `counts_as_configuration_tried: false`, and `configurations_tried` stays 1.
+- Its numbers match my scratch run: maker +1756.22% (€371.24), taker +1280.25% (€276.05).
+- It is built from a separate in-memory `RiskLimits`, passed through a new `run_backtest(limits=...)` argument that only the backtest command uses. `config.yaml` and `Settings` are untouched.
+
+**F-6 notes:**
+- The guard now compares fills up to each cut, and the engine checks that every evaluated candle is closed.
+- My planted fill-side peek B is still not caught. Rerun fills before the cut cannot see a peek that only reaches past the cut. Fills happen within 6 h after the daily close, so a fill-side peek of up to 6 h never reaches a cutpoint at the close.
+- The fill eligibility unit tests remain the real defence. This is acceptable at Low severity.
+
+### New observations (Low)
+
+- **N-1: the SIMULATED RESET makes halts trade-neutral in this run.** The policy is `next_daily_close`, with `end_run` as the alternative. It assumes the operator resets every halt before the next daily close, 31 times in 8.3 years.
+  - Under `end_run`, the backtest would stop on 2017-07-25.
+  - The report states this clearly in its halts section, but line 1 does not mention halts. A short pointer near the top would help.
+  - The operator must ratify the policy, and PROGRESS.md lists it.
+- **N-2: the report's "Halted:" line is confusing.** It reads `Halted: False (daily_loss: …)`, showing the first halt's reason next to `False`. This is cosmetic.
+- **N-3: a backtest-only override of the risk limits now exists.** `run_backtest` accepts a `limits` argument. It is used only by the diagnostic, but M3 must make sure no dry-run or live path can construct or pass modified limits (SAF-05).
+
+### Updated overall verdict: PASS
+
+Every High and Medium finding is fixed and verified. The remaining items are operator ratifications, not defects:
+- F-8: the published-fee assumption.
+- N-1: the SIMULATED RESET policy.
+- The completion-intent design (F-3).
+
+F-5 is deferred to M3 and recorded there. F-6 is partial and Low.
