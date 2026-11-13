@@ -1,7 +1,7 @@
 """``bot`` entry point (SAF-08, SAF-09, FR-10, FR-45, AD-15).
 
-Subcommands in M0: ``backtest``, ``dry-run``, ``live``. All are stubs that validate the
-configuration and the strategy/mode combination, then exit with "not implemented".
+Subcommands: ``backtest``, ``dry-run``, ``live``. In M0 all three were stubs that validated
+the configuration and the strategy/mode combination, then exited with "not implemented".
 M2: ``bot backtest`` is implemented (``bot.backtest.command``): one command, holdout excluded
 by default, look-ahead guard (exit 5 on a leak), ``--holdout`` for the single registered
 holdout run, ``--change N``. ``dry-run`` and ``live`` remain stubs.

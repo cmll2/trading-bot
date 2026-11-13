@@ -3,7 +3,7 @@ title: 'Refactor sweep'
 type: refactor
 ticket: '10'
 created: '2026-11-13'
-status: in-review
+status: built
 baseline_revision: '8d7cfa4'
 route: oneshot
 route_source: auto
@@ -42,6 +42,17 @@ Oneshot: 22 lines added / 16 removed, docstrings and dead code only.
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-11-13 — Review pass
+- verdicts: 2 findings — high 0, medium 0, low 2, false 0, maybe-false 0
+- findings:
+  - `[low]` `[patch]` cli docstring still called backtest a stub — rewritten as M0 history + M2 state.
+  - `[low]` `[patch]` compare module milestone said M3/M4 — M4/M5 (stories 5.7, 6.2-6.4).
+
+## Auto Run Result
+
+- Summary: docstrings and dead helpers only; no behaviour change (781 tests before and after).
+- Review: 2 patches. Follow-up review recommended: false.
 
 ## Verification
 

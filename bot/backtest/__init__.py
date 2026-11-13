@@ -12,5 +12,5 @@ Modules:
     market_rules  recorded public market snapshot (minimums, precision)
     provenance    git commit, dirty flag, config and limits hashes (FR-18)
     results       results file writer
-Planned (M3/M4): compare (dry-run vs backtest, AD-20).
+Planned (M4/M5): compare (dry-run vs backtest, AD-20).
 """
