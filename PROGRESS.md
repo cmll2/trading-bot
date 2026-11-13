@@ -78,6 +78,9 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 - 2026-11-12 — **M1 independently audited: PASS with findings** (`docs/audits/M1-audit.md`). 596 tests pass. Real cache validated: 1d 2013-09-10→2026-11-11 (4,811 rows), 4h →2026-11-12 (28,866), 15m →2026-11-12 (461,849); all 720 recent 1d/4h candles match Kraken's public OHLC exactly. Findings handled: F-1 15m cap tightened 0.5%→0.25% (fc7621f); F-2 (synthetic candles also cover trading halts → non-fillable) and F-3 (2018-01-13 outlier) added to M2 stories; F-4 clock skew deferred to M3. Raw archive parts (9.5 GB) deleted after audit; re-downloadable from URLs + SHA-256 in `docs/data-manifest.md`.
 - **Awaiting operator review of M1** (branch `m1-data`, not merged).
 
+- 2026-11-13 — **v0 holdout run (one-shot, recorded in `results/holdout_runs.jsonl`, commit f473eba).** SIMULATED, 2025-11-11..2026-11-10: strategy +5.95% (maker) / +6.4% (taker) vs buy-and-hold -27.2%; max DD 12.8% vs 44.3%; **only 1 fill** (one entry, position still open at end), time in market 22%; Sharpe 0.42, 95% CI [-1.18, 1.92]. One trade is statistically meaningless: the result mostly reflects being flat during a falling year. Not evidence of future profit. v0 is now frozen.
+- 2026-11-13 — M2 merged to main. M3 started on branch `m3-engine`.
+
 ## Decisions log
 
 | Date | Decision | Reason |

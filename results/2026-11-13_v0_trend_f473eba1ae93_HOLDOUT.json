@@ -1,0 +1,346 @@
+{
+  "caveats": [
+    "Positions are capped by the protected risk limit max_position_abs_quote (EUR 25): once equity grows past it, re-entries invest at most that amount while buy-and-hold keeps its whole initial stake invested (it buys once and holds). The DIAGNOSTIC section shows the same strategy without that cap.",
+    "Exchange minimums and precision come from one public market snapshot and are applied to the whole history; historical minimums differed (Kraken's BTC minimum was about 0.002 BTC in earlier years, which would have mattered at EUR 20), and the simulated half spread is optimistic for 2017-2018, when BTC/EUR spreads were wider.",
+    "Fees are Kraken's published entry tier (maker 0.0040, taker 0.0080), not the account's tier (verified against fetch_trading_fee at live start, M6).",
+    "Execution model: post-only limit at the best bid/ask (last closed 15m close +/- 1 bp), re-priced every 30 min within 6 h after the daily close, plus a 24 h completion phase for an unsellable partial buy; filled only on a strict trade-through of a later closed 15m candle; synthetic (no-trade / exchange-halt) candles never fill. The taker variant fills at once at the ask/bid; its buy-and-hold benchmark pays the same half spread.",
+    "Equity of the strategy and of buy-and-hold is marked at mid, without exit costs.",
+    "Parameters were fixed before any evaluation; configurations tried: 1. THIS IS THE ONE-SHOT HOLDOUT RUN: holdout data was loaded and evaluated."
+  ],
+  "change": 0,
+  "code_version": {
+    "git_commit": "f473eba1ae93338bf25b510e66542a1b279bcaf6",
+    "git_dirty": false
+  },
+  "config_hash": "77c5e1f2eb254d480acca501f90786e6a60908dcce5f920869175012a4a18ade",
+  "configurations_tried": 1,
+  "data": {
+    "end_exclusive": "2026-11-11T00:00:00+00:00",
+    "hashes": {
+      "15m": "596a819b4a8848b3dbf0f3d5198fc4e6d177d16f5f14ec562d7fdeb6ea5e3631",
+      "1d": "b3fc1f5ad11bebf436e2b224ecbb52c499cff93214a30ef5a1eae1264be91270"
+    },
+    "pair": "BTC/EUR",
+    "start": "2025-04-15T00:00:00+00:00"
+  },
+  "data_anomalies": [],
+  "diagnostics": {
+    "no_abs_position_cap": {
+      "counts_as_configuration_tried": false,
+      "label": "DIAGNOSTIC (not used for any decision): v0 without the EUR 25 absolute position cap",
+      "maker": {
+        "buy_and_hold": {
+          "annualized_return": -0.2722995498,
+          "days": 364,
+          "end": "2026-11-10T00:00:30+00:00",
+          "final_equity": 14.5666891032,
+          "initial_equity": 20.0,
+          "max_drawdown": 0.4430383578,
+          "round_trips": 0,
+          "sharpe": -0.5256233047,
+          "sharpe_ci_95": [
+            -2.6243122567,
+            1.6528852091
+          ],
+          "start": "2025-11-11T00:00:30+00:00",
+          "time_in_market": 1.0,
+          "total_fees": 0.0796812749,
+          "total_return": -0.2716655448,
+          "trades": 1,
+          "turnover": 1.3890487035
+        },
+        "halts": {},
+        "strategy": {
+          "annualized_return": 0.0596886286,
+          "days": 364,
+          "end": "2026-11-10T00:00:30+00:00",
+          "final_equity": 21.190406507,
+          "initial_equity": 20.0,
+          "max_drawdown": 0.1277591265,
+          "round_trips": 0,
+          "sharpe": 0.4151368969,
+          "sharpe_ci_95": [
+            -1.1795581814,
+            1.9157925884
+          ],
+          "start": "2025-11-11T00:00:30+00:00",
+          "time_in_market": 0.2219178082,
+          "total_fees": 0.0796791062,
+          "total_return": 0.0595203253,
+          "trades": 1,
+          "turnover": 0.9707925401
+        }
+      },
+      "max_position_abs_quote": "1E+12",
+      "note": "Same strategy, parameters and data; only the protected absolute cap (max_position_abs_quote) is lifted in a separate in-memory limits object for these diagnostic runs. Protected limits unchanged. Not a configuration tried (configurations_tried stays 1); never used to choose anything.",
+      "taker": {
+        "buy_and_hold": {
+          "annualized_return": -0.2752678398,
+          "days": 364,
+          "end": "2026-11-10T00:00:30+00:00",
+          "final_equity": 14.5074340379,
+          "initial_equity": 20.0,
+          "max_drawdown": 0.4453039927,
+          "round_trips": 0,
+          "sharpe": -0.5343912906,
+          "sharpe_ci_95": [
+            -2.6246818001,
+            1.652663104
+          ],
+          "start": "2025-11-11T00:00:30+00:00",
+          "time_in_market": 1.0,
+          "total_fees": 0.1587301587,
+          "total_return": -0.2746282981,
+          "trades": 1,
+          "turnover": 1.389165929
+        },
+        "halts": {},
+        "strategy": {
+          "annualized_return": 0.0645782034,
+          "days": 364,
+          "end": "2026-11-10T00:00:30+00:00",
+          "final_equity": 21.2879139754,
+          "initial_equity": 20.0,
+          "max_drawdown": 0.127761403,
+          "round_trips": 0,
+          "sharpe": 0.4386084379,
+          "sharpe_ci_95": [
+            -1.1740798537,
+            1.9249859029
+          ],
+          "start": "2025-11-11T00:00:30+00:00",
+          "time_in_market": 0.2219178082,
+          "total_fees": 0.1587292691,
+          "total_return": 0.0643956988,
+          "trades": 1,
+          "turnover": 0.9658870381
+        }
+      }
+    }
+  },
+  "execution": {
+    "completion_window_hours": 24,
+    "fill_settle_timeout_seconds": 60,
+    "reprice_interval_minutes": 30,
+    "sim_half_spread_bps": "1",
+    "sim_timeframe": "15m",
+    "tick_seconds": 30,
+    "window_hours": 6
+  },
+  "fees": {
+    "maker": "0.0040",
+    "source": "published_schedule",
+    "taker": "0.0080"
+  },
+  "halt_policy": "protected halts are evaluated on equity marked at every 15m close; after a halt the resting orders are cancelled and the position kept, and the operator's manual reset is modelled as a SIMULATED RESET at the next UTC daily close (a total-drawdown reset also rebases the baseline)",
+  "holdout": {
+    "banner": null,
+    "end": "2026-11-10",
+    "runs_recorded": 1,
+    "start": "2025-11-11",
+    "status": "THIS IS THE HOLDOUT RUN (recorded in holdout_runs.jsonl)"
+  },
+  "label": "SIMULATED",
+  "limits_hash": "7193909170f44fc89540856a29e0ef5cc55e8ff8690e573ae30cd9f0c67c583c",
+  "lookahead_guard": {
+    "candles_compared": 1363,
+    "cutpoints": [
+      "2025-11-14T00:00:00.000Z",
+      "2025-11-19T00:00:00.000Z",
+      "2025-12-04T00:00:00.000Z",
+      "2025-12-13T00:00:00.000Z",
+      "2025-12-28T00:00:00.000Z",
+      "2026-01-15T00:00:00.000Z",
+      "2026-01-16T00:00:00.000Z",
+      "2026-02-09T00:00:00.000Z",
+      "2026-05-15T00:00:00.000Z",
+      "2026-07-02T00:00:00.000Z",
+      "2026-07-31T00:00:00.000Z",
+      "2026-10-02T00:00:00.000Z"
+    ],
+    "passed": true,
+    "seed": 20261113
+  },
+  "market_rules": {
+    "amount_min": "0.00006",
+    "amount_step": "1E-8",
+    "cost_min": "0.45",
+    "fetched_at": "2026-11-13",
+    "source": "ccxt 4.5.92 kraken.load_markets() (public AssetPairs)",
+    "tick_size": "0.1"
+  },
+  "params": {
+    "sma_days": 200
+  },
+  "results": {
+    "maker": {
+      "buy_and_hold": {
+        "annualized_return": -0.2722995498,
+        "days": 364,
+        "end": "2026-11-10T00:00:30+00:00",
+        "final_equity": 14.5666891032,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.4430383578,
+        "round_trips": 0,
+        "sharpe": -0.5256233047,
+        "sharpe_ci_95": [
+          -2.6243122567,
+          1.6528852091
+        ],
+        "start": "2025-11-11T00:00:30+00:00",
+        "time_in_market": 1.0,
+        "total_fees": 0.0796812749,
+        "total_return": -0.2716655448,
+        "trades": 1,
+        "turnover": 1.3890487035
+      },
+      "cash": {
+        "annualized_return": 0.0,
+        "days": 364,
+        "end": "2026-11-10T00:00:30+00:00",
+        "final_equity": 20.0,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.0,
+        "round_trips": 0,
+        "sharpe": 0.0,
+        "sharpe_ci_95": [
+          0.0,
+          0.0
+        ],
+        "start": "2025-11-11T00:00:30+00:00",
+        "time_in_market": 0.0,
+        "total_fees": 0.0,
+        "total_return": 0.0,
+        "trades": 0,
+        "turnover": 0.0
+      },
+      "halt_reason": null,
+      "halted": false,
+      "halts": {
+        "count_by_rule": {},
+        "effect": "no halt",
+        "events": [],
+        "intents_halted": 0
+      },
+      "order_states": {
+        "cancelled": 1,
+        "filled": 1
+      },
+      "orders_submitted": 2,
+      "risk_events": {},
+      "signal_outcomes": {
+        "filled": 1,
+        "no_action": 364
+      },
+      "strategy": {
+        "annualized_return": 0.0596886286,
+        "days": 364,
+        "end": "2026-11-10T00:00:30+00:00",
+        "final_equity": 21.190406507,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.1277591265,
+        "round_trips": 0,
+        "sharpe": 0.4151368969,
+        "sharpe_ci_95": [
+          -1.1795581814,
+          1.9157925884
+        ],
+        "start": "2025-11-11T00:00:30+00:00",
+        "time_in_market": 0.2219178082,
+        "total_fees": 0.0796791062,
+        "total_return": 0.0595203253,
+        "trades": 1,
+        "turnover": 0.9707925401
+      }
+    },
+    "taker": {
+      "buy_and_hold": {
+        "annualized_return": -0.2752678398,
+        "days": 364,
+        "end": "2026-11-10T00:00:30+00:00",
+        "final_equity": 14.5074340379,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.4453039927,
+        "round_trips": 0,
+        "sharpe": -0.5343912906,
+        "sharpe_ci_95": [
+          -2.6246818001,
+          1.652663104
+        ],
+        "start": "2025-11-11T00:00:30+00:00",
+        "time_in_market": 1.0,
+        "total_fees": 0.1587301587,
+        "total_return": -0.2746282981,
+        "trades": 1,
+        "turnover": 1.389165929
+      },
+      "cash": {
+        "annualized_return": 0.0,
+        "days": 364,
+        "end": "2026-11-10T00:00:30+00:00",
+        "final_equity": 20.0,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.0,
+        "round_trips": 0,
+        "sharpe": 0.0,
+        "sharpe_ci_95": [
+          0.0,
+          0.0
+        ],
+        "start": "2025-11-11T00:00:30+00:00",
+        "time_in_market": 0.0,
+        "total_fees": 0.0,
+        "total_return": 0.0,
+        "trades": 0,
+        "turnover": 0.0
+      },
+      "halt_reason": null,
+      "halted": false,
+      "halts": {
+        "count_by_rule": {},
+        "effect": "no halt",
+        "events": [],
+        "intents_halted": 0
+      },
+      "order_states": {
+        "filled": 1
+      },
+      "orders_submitted": 1,
+      "risk_events": {},
+      "signal_outcomes": {
+        "filled": 1,
+        "no_action": 364
+      },
+      "strategy": {
+        "annualized_return": 0.0645782034,
+        "days": 364,
+        "end": "2026-11-10T00:00:30+00:00",
+        "final_equity": 21.2879139754,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.127761403,
+        "round_trips": 0,
+        "sharpe": 0.4386084379,
+        "sharpe_ci_95": [
+          -1.1740798537,
+          1.9249859029
+        ],
+        "start": "2025-11-11T00:00:30+00:00",
+        "time_in_market": 0.2219178082,
+        "total_fees": 0.1587292691,
+        "total_return": 0.0643956988,
+        "trades": 1,
+        "turnover": 0.9658870381
+      }
+    }
+  },
+  "slippage_bps": "5",
+  "strategy": "v0_trend",
+  "verdict": {
+    "beats_at_maker": true,
+    "beats_at_taker": true,
+    "beats_buy_and_hold_after_costs": true,
+    "line": "VERDICT (SIMULATED): v0_trend beats buy-and-hold after costs in this backtest: total return +6.0% vs buy-and-hold -27.2% at maker fees, +6.4% vs -27.5% at taker fees (2025-11-11..2026-11-10). This is not evidence of future profit."
+  },
+  "walk_forward": [],
+  "warmup_candles": 200
+}
