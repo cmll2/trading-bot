@@ -60,3 +60,9 @@ Verify: FakeClock/fake-ccxt test drives one daily close to a journaled signal an
 ## Notes
 
 - Assumption: criteria drafted headless by Sofia on 2026-11-11 from the PRD, architecture and PROGRESS.md; awaiting operator approval (then `refined: true`).
+
+## Added from M2 audit (2026-11-13)
+
+- **Stale OWN feed vs exchange halt (audit M2 F-5).** The M2 engine keeps the resting order (no re-price) whenever `now - ticker.ts > stale_ticker_seconds`. In the backtest that condition only arises from exchange halts (synthetic candles), where keeping the order is realistic. In dry-run/live it also fires when the bot's own feed is stale: the order would keep working while the bot is blind, for up to the 6 h window, outside the price-sanity check. Revisit before the dry-run: cancel resting orders on own-feed staleness (cancels reduce risk and are always allowed), and keep them only when the exchange's market status shows a halt — or document why not. Add an engine test for each case.
+- **Halts are evaluated on equity at every tick (audit M2 F-1).** The live tick is 30 s; the backtest now evaluates halts at every 15m close. Expect daily-loss halts roughly 3–4 times a year at full exposure on BTC (31 in the 2017-2025 backtest); the dry-run must show them, and the M5 review should compare halt counts with the backtest's SIMULATED RESET count.
+- **`Engine.reset_halts(now, note, rebase_rules)` exists** (M2): the M3 `bot reset-halt` consumer should call it when it consumes a `reset_halt` operator action, instead of writing `halts` itself.

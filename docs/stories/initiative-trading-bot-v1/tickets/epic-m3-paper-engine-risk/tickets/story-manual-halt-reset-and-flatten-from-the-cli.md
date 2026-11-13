@@ -59,3 +59,8 @@ Verify: Tests: a daily_loss halt stays until reset; reset without --rebase keeps
 ## Notes
 
 - Assumption: criteria drafted headless by Sofia on 2026-11-11 from the PRD, architecture and PROGRESS.md; awaiting operator approval (then `refined: true`).
+
+## Added from M2 audit (2026-11-13)
+
+- The backtest models this manual reset as a SIMULATED RESET at the next UTC daily close (`backtest.simulated_halt_reset`), through `Engine.reset_halts`; the CLI path must reuse that method (one writer of `halts`, AD-17), with `--rebase-baseline` mapping to `rebase_rules=("total_drawdown",)`.
+- The completion phase is now a separate intent linked by `intents.parent_intent_id` (audit M2 F-3); `bot flatten` must cancel an active completion intent like any other.
