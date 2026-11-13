@@ -23,13 +23,14 @@ from bot.backtest.holdout import (
     register_holdout_run,
     walk_forward,
 )
-from bot.backtest.lookahead import check_prefix_invariance
+from bot.backtest.lookahead import LookAheadError, check_prefix_invariance
 from bot.backtest.metrics import buy_and_hold_metrics, cash_metrics, strategy_metrics
 from bot.backtest.provenance import config_hash, git_commit, git_dirty, limits_hash
 from bot.backtest.report import anomaly_block, render_markdown, variant_block, verdict
 from bot.backtest.results import results_stem, write_results
 from bot.backtest.runner import InsufficientData, RunResult, run_backtest
 from bot.config import Settings
+from bot.engine import FutureCandleError
 from bot.strategy.registry import build
 
 
@@ -121,6 +122,15 @@ def _metrics(  # noqa: ANN001
 
 
 def execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict[str, Any]]:
+    """Run the backtest; a candle served before its close (``FutureCandleError``) is a
+    look-ahead failure like the prefix-invariance guard's (no report is written)."""
+    try:
+        return _execute(settings, req)
+    except FutureCandleError as exc:
+        raise LookAheadError(f"look-ahead detected by the engine: {exc}") from exc
+
+
+def _execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict[str, Any]]:
     """Run the backtest (maker and taker variants, look-ahead guard) and write the results
     JSON and Markdown report; raises ``BacktestRefused`` / ``LookAheadError`` /
     ``InsufficientData`` before writing anything."""

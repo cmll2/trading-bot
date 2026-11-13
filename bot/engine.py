@@ -85,6 +85,11 @@ class EngineError(RuntimeError):
     """The engine cannot continue safely."""
 
 
+class FutureCandleError(EngineError):
+    """The market-data adapter served a candle that is not closed at the evaluation time:
+    a look-ahead bug in the adapter (audit M2 F-2). Never trade on it."""
+
+
 @dataclass(frozen=True)
 class EngineConfig:
     mode: Mode  # label only (AD-1)
@@ -534,6 +539,7 @@ class Engine:
         last = hist.last_open_at
         if last is None:
             return False
+        self._check_closed(last, now)
         signal_id = f"{self.strategy.id}|{self.cfg.pair}|{self.cfg.timeframe}|{iso(last)}"
         if self.store.one("SELECT 1 FROM signals WHERE signal_id = ?", (signal_id,)):
             return False
@@ -619,6 +625,14 @@ class Engine:
                     intent_id, now, "cancelled", "rejected_by_risk", "exchange rejected the order"
                 )
         return True
+
+    def _check_closed(self, candle_open_at: datetime, now: datetime) -> None:
+        """Every evaluated candle must be closed at evaluation: open_at + interval <= now."""
+        if candle_open_at + self._interval > now:
+            raise FutureCandleError(
+                f"candle {iso(candle_open_at)} ({self.cfg.timeframe}) is not closed at "
+                f"{iso(now)}: the market-data adapter leaks the future"
+            )
 
     def _decide(self, target: Decimal, price: Decimal) -> tuple[str | None, str]:
         """Long-or-flat: buy when a target > 0 finds no position; sell the whole position

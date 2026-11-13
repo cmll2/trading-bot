@@ -294,8 +294,8 @@ def _collect(
     signals = [
         dict(r)
         for r in store.all(
-            "SELECT candle_open_at, target_fraction, signal_price, outcome, outcome_reason "
-            "FROM signals ORDER BY candle_open_at"
+            "SELECT candle_open_at, evaluated_at, target_fraction, signal_price, outcome, "
+            "outcome_reason FROM signals ORDER BY candle_open_at"
         )
     ]
     fills = [

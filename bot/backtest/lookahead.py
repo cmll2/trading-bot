@@ -10,6 +10,10 @@ direction of the future therefore differs from the baseline in at least one of t
 The target position journaled for every candle up to and including k must equal the
 baseline run's; otherwise ``LookAheadError`` is raised and the caller writes no report.
 
+Since audit M2 F-2/F-6 it also compares every signal EVALUATED by cut + lag (whatever
+candle label the adapter reported) and every fill up to the cut, and the engine refuses
+any evaluated candle that is not closed (``FutureCandleError``).
+
 Because candles enter a backtest only through the dataset loader, a strategy that reads
 "the loaded frame" through a closure, a module global refreshed on load, or a column
 precomputed from it sees the random future in the rerun and its past targets change.
@@ -31,7 +35,7 @@ from datetime import date, datetime, timedelta
 from bot.backtest import dataset as dataset_mod
 from bot.backtest.runner import InsufficientData, RunResult, run_backtest
 from bot.config import Settings
-from bot.store import parse_iso
+from bot.store import iso, parse_iso
 
 
 class LookAheadError(RuntimeError):
@@ -47,6 +51,22 @@ class LookAheadReport:
 
 def _targets(run: RunResult) -> dict[str, str]:
     return {str(s["candle_open_at"]): str(s["target_fraction"]) for s in run.signals}
+
+
+def _evaluated(run: RunResult, horizon: str) -> dict[str, str]:
+    return {
+        f"{s['candle_open_at']}@{s['evaluated_at']}": str(s["target_fraction"])
+        for s in run.signals
+        if str(s["evaluated_at"]) <= horizon
+    }
+
+
+def _fills_until(run: RunResult, cut: str) -> list[tuple[str, str, str, str]]:
+    return [
+        (str(f["at"]), str(f["side"]), str(f["qty"]), str(f["price"]))
+        for f in run.fills
+        if str(f["at"]) <= cut
+    ]
 
 
 def check_prefix_invariance(
@@ -102,6 +122,7 @@ def check_prefix_invariance(
                 params=params,
             )
             got = _targets(rerun)
+            label = f"({'mirrored ' if mirror else ''}random walk, cutpoint {i + 1}/{len(cuts)})"
             for c in candles:
                 if parse_iso(c) > k_open:
                     break
@@ -111,8 +132,25 @@ def check_prefix_invariance(
                     raise LookAheadError(
                         f"look-ahead detected: target for candle {c} was {base[c]} with real "
                         f"future data but {got[c]} when data after {cut.isoformat()} was "
-                        f"replaced ({'mirrored ' if mirror else ''}random walk, cutpoint "
-                        f"{i + 1}/{len(cuts)})"
+                        f"replaced {label}"
                     )
                 compared += 0 if mirror else 1  # distinct candles, not reruns
+            # Audit M2 F-2: compare every signal EVALUATED by cut + lag, whatever candle
+            # label the adapter gave it (an off-by-one adapter mislabels the leaked one).
+            horizon = iso(cut + lag)
+            b_sig = _evaluated(baseline, horizon)
+            r_sig = _evaluated(rerun, horizon)
+            if b_sig != r_sig:
+                diff = sorted(set(b_sig.items()) ^ set(r_sig.items()))[:3]
+                raise LookAheadError(
+                    f"look-ahead detected: signals evaluated by {horizon} differ when data "
+                    f"after {cut.isoformat()} was replaced {label}: {diff}"
+                )
+            # Audit M2 F-6: fills up to the cut must not depend on the replaced future.
+            b_f, r_f = _fills_until(baseline, iso(cut)), _fills_until(rerun, iso(cut))
+            if b_f != r_f:
+                raise LookAheadError(
+                    f"look-ahead detected: fills up to {cut.isoformat()} differ when data after "
+                    f"it was replaced {label}"
+                )
     return LookAheadReport(cutpoints=tuple(cuts), candles_compared=compared, seed=seed)

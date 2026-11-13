@@ -168,3 +168,48 @@ def test_replaced_future_stays_finite_over_a_long_horizon(tmp_path) -> None:
     cut = frame["open_at"].iloc[10]
     out = _random_walk_after(frame, "15m", cut.to_pydatetime(), np.random.default_rng(1))
     assert np.isfinite(out[["open", "high", "low", "close"]].to_numpy()).all()
+
+
+def _plant_off_by_one_adapter(monkeypatch) -> None:  # noqa: ANN001
+    """Auditor's planted leak A (audit M2 F-2): ``ReplayMarketData.closed_candles`` is off
+    by one day for 1d, so the strategy sees the still-forming candle."""
+    from datetime import timedelta
+
+    from bot.data.market import ReplayMarketData
+
+    real = ReplayMarketData.closed_candles
+
+    def leaky(self, pair, timeframe, limit=None):  # noqa: ANN001, ANN202
+        if timeframe != "1d":
+            return real(self, pair, timeframe, limit)
+        frame = self._frame(pair, timeframe)
+        as_of = self._clock.now() + timedelta(days=1)  # one day ahead: the forming candle
+        visible = frame[frame["open_at"] + pd.Timedelta(days=1) <= pd.Timestamp(as_of)]
+        return CandleHistory.from_frame(visible, timeframe, as_of)
+
+    monkeypatch.setattr(ReplayMarketData, "closed_candles", leaky)
+
+
+def test_planted_off_by_one_adapter_leak_is_caught_and_no_report_written(tmp_path, monkeypatch):
+    env = make_env(tmp_path, ZIGZAG, wiggle=0.01)
+    _plant_off_by_one_adapter(monkeypatch)
+    req = default_request(env.settings, "v0_trend", date(2026, 11, 13))
+    req = req.__class__(**{**req.__dict__, "end": end_date(env, len(ZIGZAG))})
+    with pytest.raises(LookAheadError, match="look-ahead detected"):
+        execute(env.settings, req)
+    assert not env.results_dir.exists() or list(env.results_dir.iterdir()) == []
+
+
+def test_guard_alone_catches_the_off_by_one_adapter_leak(tmp_path, monkeypatch) -> None:
+    """Defence in depth: with the engine's closed-candle assertion disabled, the guard's
+    comparison by evaluation time still catches the mislabelled leak."""
+    from bot.engine import Engine
+
+    env = make_env(tmp_path, ZIGZAG, wiggle=0.01)
+    _plant_off_by_one_adapter(monkeypatch)
+    monkeypatch.setattr(Engine, "_check_closed", lambda self, open_at, now: None)
+    end = end_date(env, len(ZIGZAG))
+    ds = dataset_mod.load_dataset(env.settings, env.start, end, ("1d", "15m"))
+    base = runner_mod.run_backtest(env.settings, ds, "maker")
+    with pytest.raises(LookAheadError, match="look-ahead detected"):
+        check_prefix_invariance(env.settings, env.start, end, ("1d", "15m"), base)
