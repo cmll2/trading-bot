@@ -7,6 +7,12 @@ precision come from ``MarketRules`` (exchange metadata), never hardcoded.
   budget = min(target x equity, max_position_fraction x equity, max_position_abs_quote)
   - current exposure (position + resting buys, at ``price``);
 - sell qty = the full base position, floored to the step (target 0: long-or-flat).
+
+Reject, never round up (FR-13, CON-02): a buy whose qty < amount_min or qty x price <
+cost_min, or whose resulting position would not stay sellable after the worst loss the
+limits allow (P >= amount_min and P x price x (1 - max_total_drawdown) >= cost_min), is
+``NoOrder("below_minimum")``; so is a sell below the minimums. The engine stores the
+reason with the signal and writes a ``rejection`` risk event (rule ``minimums``).
 """
 
 from __future__ import annotations
@@ -57,15 +63,33 @@ def buy_qty(s: SizingInput, rules: MarketRules, limits: RiskLimits) -> Decimal |
         return NoOrder("no_action", f"no budget (cap {cap}, free quote {s.free_quote})")
     unit = s.price * (1 + s.fee_rate) * (1 + s.slippage_bps * BPS)
     qty = floor_step(spend / unit, rules.amount_step)
-    if qty <= 0:
-        return NoOrder("below_minimum", f"spend {spend} buys less than one amount step")
+    if qty < rules.amount_min:
+        return NoOrder("below_minimum", f"buy qty {qty} < exchange amount_min {rules.amount_min}")
+    if qty * s.price < rules.cost_min:
+        return NoOrder(
+            "below_minimum", f"buy cost {qty * s.price} < exchange cost_min {rules.cost_min}"
+        )
+    after = s.position + qty
+    if not sellable(after, s.price, rules, limits):
+        return NoOrder(
+            "below_minimum",
+            f"position {after} would not stay sellable after a "
+            f"{limits.max_total_drawdown_fraction} loss (threshold "
+            f"{sellable_threshold(s.price, rules, limits)})",
+        )
     return qty
 
 
-def sell_qty(position: Decimal, rules: MarketRules) -> Decimal | NoOrder:
+def sell_qty(position: Decimal, price: Decimal, rules: MarketRules) -> Decimal | NoOrder:
     qty = floor_step(position, rules.amount_step)
     if qty <= 0:
         return NoOrder("no_action", "no base position to sell")
+    if qty < rules.amount_min:
+        return NoOrder("below_minimum", f"sell qty {qty} < exchange amount_min {rules.amount_min}")
+    if qty * price < rules.cost_min:
+        return NoOrder(
+            "below_minimum", f"sell cost {qty * price} < exchange cost_min {rules.cost_min}"
+        )
     return qty
 
 

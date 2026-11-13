@@ -388,6 +388,18 @@ class Engine:
         with self.store.transaction():
             self.store.update("intents", "intent_id", intent_id, state=state, updated_at=iso(now))
             self._set_outcome(intent["signal_id"], outcome, reason)
+            position = self.store.position(self.cfg.pair)
+            if intent["side"] == "sell" and 0 < position < self.rules.amount_min:
+                # AD-13 sell-side dust: stays in equity; the next buy adds to it and the
+                # next full-balance sell clears it. No top-up buy is made just to sell.
+                self._risk_event(
+                    now,
+                    "dust",
+                    "minimums",
+                    intent_id,
+                    f"base {position} left below amount_min {self.rules.amount_min}",
+                    {},
+                )
 
     def _price(self, side: str, ticker: Ticker) -> Decimal:
         """Passive (AD-5): best bid for a buy, best ask for a sell, rounded away from the
@@ -413,7 +425,7 @@ class Engine:
     def _size(self, side: str, target: Decimal, price: Decimal, now: datetime, mid: Decimal):  # noqa: ANN202
         position = self.store.position(self.cfg.pair)
         if side == "sell":
-            return sell_qty(position, self.rules)
+            return sell_qty(position, price, self.rules)
         equity = self.store.equity_at(now, mid, self.cfg.pair)
         free_quote = self.store.cash()
         return buy_qty(
@@ -513,6 +525,8 @@ class Engine:
             elif now >= window_end:
                 self._set_outcome(signal_id, "not_filled", "window_passed")
             else:
+                # AD-13: minimums change without notice; re-read them for each intent.
+                self._rules = self.broker.load_market(self.cfg.pair)
                 price = self._price(side, ticker)
                 sized = self._size(side, target, price, now, mid)
                 if isinstance(sized, NoOrder):
