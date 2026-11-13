@@ -1,0 +1,325 @@
+{
+  "caveats": [
+    "Positions are capped by the protected risk limit max_position_abs_quote (EUR 25): once equity grows past it, re-entries invest at most that amount while buy-and-hold keeps its whole initial stake invested (it buys once and holds).",
+    "Exchange minimums and precision come from one public market snapshot and are applied to the whole history; historical minimums differed.",
+    "Fees are Kraken's published entry tier (maker 0.0040, taker 0.0080), not the account's tier (verified against fetch_trading_fee at live start, M6).",
+    "Execution model: post-only limit at the best bid/ask (last closed 15m close +/- 1 bp), re-priced every 30 min within 6 h after the daily close, plus a 24 h completion phase for an unsellable partial buy; filled only on a strict trade-through of a later closed 15m candle; synthetic (no-trade / exchange-halt) candles never fill. The taker variant fills at once at the ask/bid; its buy-and-hold benchmark pays the same half spread.",
+    "Equity of the strategy and of buy-and-hold is marked at mid, without exit costs.",
+    "Parameters were fixed before any evaluation; configurations tried: 1. The holdout window is excluded and its data not loaded."
+  ],
+  "change": 0,
+  "code_version": {
+    "git_commit": "d438403cae5534fa337e05da135acf992fe26c87",
+    "git_dirty": false
+  },
+  "config_hash": "4f86b80bc0037e1fbeb3ad6bd18e8a0e4e35e01b0f8c34bdeb9922aa49fd991e",
+  "configurations_tried": 1,
+  "data": {
+    "end_exclusive": "2025-11-11T00:00:00+00:00",
+    "hashes": {
+      "15m": "cab88bc38f5c5e8bbcb3e9285809022a8e61d4672640b4513e4c64748b31f5d6",
+      "1d": "61ea1545c7532a5476efda7daf784c2c736e32343b2ea5f7e07bbb9eecda343f"
+    },
+    "pair": "BTC/EUR",
+    "start": "2017-01-01T00:00:00+00:00"
+  },
+  "data_anomalies": [
+    {
+      "date": "2018-01-13",
+      "fills_on_day": {
+        "maker": 0,
+        "taker": 0
+      },
+      "flag": "no fill",
+      "note": "post-outage print: first trade at 20,000 EUR vs ~11,400-11,800 around it sets the 1d/4h open and high (audit M1 F-3)"
+    }
+  ],
+  "execution": {
+    "completion_window_hours": 24,
+    "fill_settle_timeout_seconds": 60,
+    "reprice_interval_minutes": 30,
+    "sim_half_spread_bps": "1",
+    "sim_timeframe": "15m",
+    "tick_seconds": 30,
+    "window_hours": 6
+  },
+  "fees": {
+    "maker": "0.0040",
+    "source": "published_schedule",
+    "taker": "0.0080"
+  },
+  "holdout": {
+    "banner": null,
+    "end": "2026-11-10",
+    "runs_recorded": 0,
+    "start": "2025-11-11",
+    "status": "excluded (not loaded, not run)"
+  },
+  "label": "SIMULATED",
+  "limits_hash": "7193909170f44fc89540856a29e0ef5cc55e8ff8690e573ae30cd9f0c67c583c",
+  "lookahead_guard": {
+    "candles_compared": 13263,
+    "cutpoints": [
+      "2017-08-27T00:00:00.000Z",
+      "2017-10-01T00:00:00.000Z",
+      "2018-02-02T00:00:00.000Z",
+      "2018-04-14T00:00:00.000Z",
+      "2018-08-12T00:00:00.000Z",
+      "2019-01-05T00:00:00.000Z",
+      "2019-01-12T00:00:00.000Z",
+      "2019-07-20T00:00:00.000Z",
+      "2021-08-18T00:00:00.000Z",
+      "2022-09-06T00:00:00.000Z",
+      "2023-04-29T00:00:00.000Z",
+      "2024-09-10T00:00:00.000Z"
+    ],
+    "passed": true,
+    "seed": 20261113
+  },
+  "market_rules": {
+    "amount_min": "0.00006",
+    "amount_step": "1E-8",
+    "cost_min": "0.45",
+    "fetched_at": "2026-11-13",
+    "source": "ccxt 4.5.92 kraken.load_markets() (public AssetPairs)",
+    "tick_size": "0.1"
+  },
+  "params": {
+    "sma_days": 200
+  },
+  "results": {
+    "maker": {
+      "buy_and_hold": {
+        "annualized_return": 0.5845795343,
+        "days": 3035,
+        "end": "2025-11-10T00:00:30+00:00",
+        "final_equity": 919.0284411396,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.8251144693,
+        "round_trips": 0,
+        "sharpe": 1.0179480564,
+        "sharpe_ci_95": [
+          0.2817433956,
+          1.7456750021
+        ],
+        "start": "2017-07-20T00:00:30+00:00",
+        "time_in_market": 1.0,
+        "total_fees": 0.0796812749,
+        "total_return": 44.951422057,
+        "trades": 1,
+        "turnover": 0.0631884883
+      },
+      "cash": {
+        "annualized_return": 0.0,
+        "days": 3035,
+        "end": "2025-11-10T00:00:30+00:00",
+        "final_equity": 20.0,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.0,
+        "round_trips": 0,
+        "sharpe": 0.0,
+        "sharpe_ci_95": [
+          0.0,
+          0.0
+        ],
+        "start": "2017-07-20T00:00:30+00:00",
+        "time_in_market": 0.0,
+        "total_fees": 0.0,
+        "total_return": 0.0,
+        "trades": 0,
+        "turnover": 0.0
+      },
+      "halt_reason": null,
+      "halted": false,
+      "order_states": {
+        "cancelled": 33,
+        "filled": 76
+      },
+      "orders_submitted": 109,
+      "risk_events": {
+        "rejection:price_sanity": 4
+      },
+      "signal_outcomes": {
+        "filled": 76,
+        "no_action": 3155,
+        "rejected_by_risk": 4
+      },
+      "strategy": {
+        "annualized_return": 0.2820740687,
+        "days": 3035,
+        "end": "2025-11-10T00:00:30+00:00",
+        "final_equity": 157.8828466868,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.6104177691,
+        "round_trips": 38,
+        "sharpe": 0.8857332299,
+        "sharpe_ci_95": [
+          0.0514947666,
+          1.7031622619
+        ],
+        "start": "2017-07-20T00:00:30+00:00",
+        "time_in_market": 0.6001317523,
+        "total_fees": 8.1138153186,
+        "total_return": 6.8941423343,
+        "trades": 76,
+        "turnover": 17.5129556072
+      }
+    },
+    "taker": {
+      "buy_and_hold": {
+        "annualized_return": 0.5838029454,
+        "days": 3035,
+        "end": "2025-11-10T00:00:30+00:00",
+        "final_equity": 915.2899738837,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.8251144693,
+        "round_trips": 0,
+        "sharpe": 1.0173670272,
+        "sharpe_ci_95": [
+          0.2809546117,
+          1.7456750021
+        ],
+        "start": "2017-07-20T00:00:30+00:00",
+        "time_in_market": 1.0,
+        "total_fees": 0.1587301587,
+        "total_return": 44.7644986942,
+        "trades": 1,
+        "turnover": 0.0631948018
+      },
+      "cash": {
+        "annualized_return": 0.0,
+        "days": 3035,
+        "end": "2025-11-10T00:00:30+00:00",
+        "final_equity": 20.0,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.0,
+        "round_trips": 0,
+        "sharpe": 0.0,
+        "sharpe_ci_95": [
+          0.0,
+          0.0
+        ],
+        "start": "2017-07-20T00:00:30+00:00",
+        "time_in_market": 0.0,
+        "total_fees": 0.0,
+        "total_return": 0.0,
+        "trades": 0,
+        "turnover": 0.0
+      },
+      "halt_reason": null,
+      "halted": false,
+      "order_states": {
+        "filled": 80
+      },
+      "orders_submitted": 80,
+      "risk_events": {},
+      "signal_outcomes": {
+        "filled": 80,
+        "no_action": 3155
+      },
+      "strategy": {
+        "annualized_return": 0.2739843736,
+        "days": 3035,
+        "end": "2025-11-10T00:00:30+00:00",
+        "final_equity": 149.7878885979,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.6253031207,
+        "round_trips": 40,
+        "sharpe": 0.8631625412,
+        "sharpe_ci_95": [
+          0.028210846,
+          1.6820142817
+        ],
+        "start": "2017-07-20T00:00:30+00:00",
+        "time_in_market": 0.6001317523,
+        "total_fees": 16.9675615662,
+        "total_return": 6.4893944299,
+        "trades": 80,
+        "turnover": 18.9863053998
+      }
+    }
+  },
+  "slippage_bps": "5",
+  "strategy": "v0_trend",
+  "verdict": {
+    "beats_at_maker": false,
+    "beats_at_taker": false,
+    "beats_buy_and_hold_after_costs": false,
+    "line": "VERDICT (SIMULATED): v0_trend does NOT beat buy-and-hold after costs (at both maker and taker fees): total return +689.4% vs buy-and-hold +4495.1% at maker fees, +648.9% vs +4476.4% at taker fees (2017-07-20..2025-11-10)."
+  },
+  "walk_forward": [
+    {
+      "buy_and_hold_return": 2.248783766476424,
+      "end": "2018-07-20T00:00:30+00:00",
+      "fills": 6,
+      "start": "2017-07-20T00:00:30+00:00",
+      "strategy_max_drawdown": 0.6104177690970191,
+      "strategy_return": 2.2448135030445986
+    },
+    {
+      "buy_and_hold_return": 0.4592546030288996,
+      "end": "2019-07-20T00:00:30+00:00",
+      "fills": 3,
+      "start": "2018-07-20T00:00:30+00:00",
+      "strategy_max_drawdown": 0.1544541630552,
+      "strategy_return": 0.4144950482447473
+    },
+    {
+      "buy_and_hold_return": -0.14748583891668482,
+      "end": "2020-07-19T00:00:30+00:00",
+      "fills": 16,
+      "start": "2019-07-20T00:00:30+00:00",
+      "strategy_max_drawdown": 0.3022769031797946,
+      "strategy_return": -0.24152128217582322
+    },
+    {
+      "buy_and_hold_return": 2.3276657613406346,
+      "end": "2021-07-19T00:00:30+00:00",
+      "fills": 1,
+      "start": "2020-07-19T00:00:30+00:00",
+      "strategy_max_drawdown": 0.34032518229860464,
+      "strategy_return": 0.9784520861056968
+    },
+    {
+      "buy_and_hold_return": -0.18084522540118728,
+      "end": "2022-07-19T00:00:30+00:00",
+      "fills": 16,
+      "start": "2021-07-19T00:00:30+00:00",
+      "strategy_max_drawdown": 0.08901532929627431,
+      "strategy_return": -0.0653509839065989
+    },
+    {
+      "buy_and_hold_return": 0.19641497975175823,
+      "end": "2023-07-19T00:00:30+00:00",
+      "fills": 5,
+      "start": "2022-07-19T00:00:30+00:00",
+      "strategy_max_drawdown": 0.04273827454962875,
+      "strategy_return": 0.06544129491000111
+    },
+    {
+      "buy_and_hold_return": 1.1937043288246816,
+      "end": "2024-07-18T00:00:30+00:00",
+      "fills": 8,
+      "start": "2023-07-19T00:00:30+00:00",
+      "strategy_max_drawdown": 0.07997715113800907,
+      "strategy_return": 0.1582428356437935
+    },
+    {
+      "buy_and_hold_return": 0.7420311047222568,
+      "end": "2025-07-18T00:00:30+00:00",
+      "fills": 14,
+      "start": "2024-07-18T00:00:30+00:00",
+      "strategy_max_drawdown": 0.08480045288345694,
+      "strategy_return": 0.022850002951961317
+    },
+    {
+      "buy_and_hold_return": -0.11992937572638533,
+      "end": "2025-11-10T00:00:30+00:00",
+      "fills": 7,
+      "start": "2025-07-18T00:00:30+00:00",
+      "strategy_max_drawdown": 0.034532529665353695,
+      "strategy_return": -0.028472289520629676
+    }
+  ],
+  "warmup_candles": 200
+}
