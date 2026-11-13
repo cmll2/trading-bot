@@ -118,6 +118,8 @@ def test_backtest_uses_the_shared_engine_and_backtest_adapters(tmp_path, monkeyp
     assert isinstance(seen["clock"], SimClock)
     assert isinstance(seen["md"], ReplayMarketData)
     assert seen["config"].approval == "autonomous" and seen["config"].mode == "backtest"
+    db = seen["store"].all("PRAGMA database_list")
+    assert db[0]["file"] == ""  # SQLite reports an empty file name for :memory:
     assert runner_mod.Engine is engine_mod.Engine
 
 
@@ -218,3 +220,53 @@ def test_replay_market_data_limit_returns_the_newest_closed_candles(tmp_path) ->
     assert np.array_equal(last5.open_at, full.open_at[-5:])
     assert len(md.closed_candles("BTC/EUR", "1d")) == 2
     _ = date
+
+
+def test_dataset_loader_itself_refuses_the_holdout(tmp_path) -> None:
+    from bot.backtest.dataset import HoldoutViolation
+
+    env = make_env(tmp_path, RISING)
+    with pytest.raises(HoldoutViolation):
+        load_dataset(env.settings, env.start, date(2025, 11, 12), ("1d", "15m"))
+
+
+def test_last_signal_whose_window_fits_is_evaluated(tmp_path) -> None:
+    env = make_env(tmp_path, RISING)
+    n = len(RISING)
+    ds = load_dataset(env.settings, env.start, end_date(env, n), ("1d", "15m"))
+    r = run_backtest(env.settings, ds, "maker")
+    # The candle opening at end - 2d closes at end - 1d; its 6 h window fits in the data.
+    assert r.signals[-1]["candle_open_at"].startswith(
+        (env.start + timedelta(days=n - 2)).isoformat()
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra", "code"),
+    [
+        (["--start", "2020-01-20", "--end", "2020-01-10"], cli.EXIT_REFUSED),
+        (["--end", "2020-01-04"], cli.EXIT_DATA_ERROR),  # shorter than the warm-up
+    ],
+)
+def test_bad_ranges_exit_cleanly_without_results(tmp_path, capsys, extra, code) -> None:
+    env = make_env(tmp_path, RISING)
+    rc = cli.main(
+        ["backtest", "--config", str(env.config_path), "--env-file", str(env.env_path), *extra],
+        env={},
+    )
+    assert rc == code
+    assert not env.results_dir.exists()
+    capsys.readouterr()
+
+
+def test_results_record_anomalies_rules_snapshot_and_fees(tmp_path) -> None:
+    from bot.backtest.command import default_request, execute
+
+    env = make_env(tmp_path, RISING)
+    req = default_request(env.settings, "v0_trend", date(2026, 11, 13))
+    req = req.__class__(**{**req.__dict__, "end": end_date(env, len(RISING))})
+    _, _, payload = execute(env.settings, req)
+    assert payload["market_rules"]["fetched_at"] == "2026-11-13"
+    assert payload["market_rules"]["amount_min"] == "0.00006"
+    assert payload["fees"] == {"maker": "0.0040", "taker": "0.0080", "source": "published_schedule"}
+    assert payload["data_anomalies"] == []  # 2018-01-13 is outside this synthetic range

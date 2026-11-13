@@ -3,7 +3,7 @@ title: 'Walking-skeleton backtest from one command'
 type: feature
 ticket: '4'
 created: '2026-11-13'
-status: in-review
+status: built
 baseline_revision: '64fce9c'
 route: full
 route_source: auto
@@ -12,7 +12,7 @@ review: quick
 review_source: pinned
 lenses_ran: [quick]
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: []
 warnings: [oversized]
 deferred: []
@@ -71,6 +71,26 @@ Implemented in the coordinator's main session. Backtest tick schedule = daily cl
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-11-13 — Review pass
+- verdicts: 10 findings — high 0, medium 3, low 6, false 1, maybe-false 0
+- findings:
+  - `[medium]` `[patch]` holdout rows read/validated in memory and `load_dataset` had no holdout check — `load_dataset` now raises `HoldoutViolation` for `end > holdout_start` unless `allow_holdout=True` (registered holdout run only); docstrings corrected (the whole file is validated, nothing at/after `end` is handed out); test.
+  - `[medium]` `[patch]` last usable daily signal dropped (off-by-one) — `last_signal_tick = end - window + lag`; hard end bounded by that window; test.
+  - `[medium]` `[patch]` bad ranges / short warm-up crashed with a traceback — start<end refusal (exit 2), `InsufficientData` and other ValueErrors → exit 4; tests.
+  - `[low]` `[patch]` known anomalies not in results — `data_anomalies` in the payload (report section in story 8).
+  - `[low]` `[patch]` market snapshot date/source missing — `market_rules` in the payload; test.
+  - `[low]` `[patch]` fee label/rates not recorded — `fees` (+ `published_schedule`) and `slippage_bps` in the payload; test.
+  - `[low]` `[patch]` in-memory store untested — test asserts SQLite reports no file.
+  - `[low]` `[patch]` raw cache evicted the other timeframe — one cache slot per file.
+  - `[low]` `[patch]` too little data reported as a rule refusal — now `InsufficientData` (exit 4).
+  - `[false]` `[reject]` fill_model.py/paper.py absent from the diff — staging artefact (untracked files not intent-added); both are reviewed in full with story 6's diff.
+
+## Auto Run Result
+
+- Summary: one command `bot backtest` runs the shared engine with backtest adapters over cached 1d/15m candles (holdout excluded and refused at the loader) and writes a SIMULATED results JSON + report.
+- Review: 9 patches, 0 deferred, 1 rejected. Follow-up review recommended: true by formula (3 medium) — named risk: the tick-schedule boundaries (last signal, hard end) are covered by one test each; story 11's known-outcome suite exercises them further.
+- Verification: full check at commit.
 
 ## Verification
 

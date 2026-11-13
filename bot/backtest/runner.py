@@ -35,6 +35,10 @@ from bot.strategy.registry import build
 Variant = Literal["maker", "taker"]
 
 
+class InsufficientData(ValueError):
+    """The range holds too few candles to warm up and evaluate the strategy."""
+
+
 @dataclass
 class RunResult:
     variant: Variant
@@ -46,6 +50,7 @@ class RunResult:
     halted: bool
     halt_reason: str | None
     initial_quote: Decimal
+    rules_snapshot: dict[str, str]
     eval_start: datetime  # first close at which the strategy had its full warm-up
     last_tick: datetime
     orders_submitted: int
@@ -79,7 +84,9 @@ def run_backtest(
 
     daily = dataset.frames[tf]
     if len(daily) < strategy.warmup + 1:
-        raise ValueError(f"need more than {strategy.warmup} {tf} candles, have {len(daily)}")
+        raise InsufficientData(
+            f"need more than {strategy.warmup} {tf} candles for the warm-up, have {len(daily)}"
+        )
     eval_start = daily["open_at"].iloc[strategy.warmup - 1].to_pydatetime() + day
 
     first = dataset.start + day + lag
@@ -128,9 +135,10 @@ def run_backtest(
     )
     engine.start()
 
-    # Last daily close whose execution window still fits inside the data.
-    last_signal_tick = dataset.end - window - day + lag
-    hard_end = dataset.end + lag
+    # Last daily-close tick whose execution window still fits inside the data:
+    # close + window <= end  <=>  tick (= close + lag) <= end - window + lag.
+    last_signal_tick = dataset.end - window + lag
+    hard_end = _floor(last_signal_tick, day) + window + step + lag
     t, last_tick = first, first
     halted = False
     while t <= hard_end and (stop_after is None or t <= stop_after):
@@ -146,7 +154,15 @@ def run_backtest(
             if t > last_signal_tick:
                 break
     engine.stop("halted" if halted else "end of data")
-    return _collect(store, variant, sid, halted, eval_start, last_tick, settings)
+    rules_info = {
+        "fetched_at": snap.fetched_at,
+        "source": snap.source,
+        "amount_min": str(snap.rules.amount_min),
+        "cost_min": str(snap.rules.cost_min),
+        "tick_size": str(snap.rules.tick_size),
+        "amount_step": str(snap.rules.amount_step),
+    }
+    return _collect(store, variant, sid, halted, eval_start, last_tick, settings, rules_info)
 
 
 def _floor(t: datetime, step: timedelta) -> datetime:
@@ -162,6 +178,7 @@ def _collect(
     eval_start: datetime,
     last_tick: datetime,
     settings: Settings,
+    rules_info: dict[str, str],
 ) -> RunResult:
     signals = [
         dict(r)
@@ -203,6 +220,7 @@ def _collect(
         halted=halted,
         halt_reason=None if halt is None else f"{halt['rule']}: {halt['reason']}",
         initial_quote=settings.paper.initial_quote,
+        rules_snapshot=rules_info,
         eval_start=eval_start,
         last_tick=last_tick,
         orders_submitted=sum(outcomes.values()),

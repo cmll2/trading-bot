@@ -1,9 +1,11 @@
 """Backtest dataset loader: the ONLY way candles enter a backtest (AD-4, NFR-02).
 
 ``load_dataset`` reads each needed timeframe from the Parquet cache, validates the whole
-file (fail loudly, never repair), slices it to ``[start, end)`` and hashes the slice. The
-backtest never sees rows at or after ``end``: by default ``end`` is the holdout start, so
-holdout data is not even loaded (FR-15).
+file (validation needs the whole file: gaps, ratios), slices it to ``[start, end)`` and
+hashes the slice. Nothing downstream ever receives a row at or after ``end``. ``end`` may
+not pass ``backtest.holdout_start`` unless ``allow_holdout=True``, which only the single,
+registered holdout run passes (FR-15, FR-16): the holdout is enforced here, at the one
+entry point, not only by the command.
 
 ``replace_after`` is the look-ahead guard's hook: every row whose ``open_at`` is at or
 after that instant is replaced by a seeded random walk, in the frames this function
@@ -38,7 +40,11 @@ KNOWN_ANOMALIES: tuple[tuple[str, str], ...] = (
     ),
 )
 
-_RAW_CACHE: dict[tuple[str, str, int, int], pd.DataFrame] = {}
+_RAW_CACHE: dict[str, tuple[tuple[str, int, int], pd.DataFrame]] = {}
+
+
+class HoldoutViolation(ValueError):
+    """A dataset or search range reaches into the fixed holdout window (FR-15)."""
 
 
 @dataclass(frozen=True)
@@ -60,15 +66,16 @@ def _read_validated(settings: Settings, pair: str, tf: str) -> pd.DataFrame:
     if not path.is_file():
         raise DataValidationError(f"no cache for {pair} {tf} ({path})")
     st = path.stat()
-    key = (str(Path(path).resolve()), tf, st.st_size, st.st_mtime_ns)
-    if key not in _RAW_CACHE:
+    slot = f"{Path(path).resolve()}|{tf}"
+    key = (str(path), st.st_size, st.st_mtime_ns)
+    cached = _RAW_CACHE.get(slot)
+    if cached is None or cached[0] != key:  # one entry per file; replaced when it changes
         frame = read_cache_checked(path)
         if frame is None:
             raise DataValidationError(f"no cache for {pair} {tf} ({path})")
         validate_frame(frame, tf, settings.data)
-        _RAW_CACHE.clear()  # keep at most the current files' frames
-        _RAW_CACHE[key] = frame
-    return _RAW_CACHE[key]
+        _RAW_CACHE[slot] = (key, frame)
+    return _RAW_CACHE[slot][1]
 
 
 def load_dataset(
@@ -79,10 +86,17 @@ def load_dataset(
     *,
     replace_after: datetime | None = None,
     seed: int = 0,
+    mirror: bool = False,
+    allow_holdout: bool = False,
 ) -> Dataset:
     """Validated candles of ``timeframes`` in ``[start, end)`` (dates are 00:00 UTC)."""
     if end <= start:
         raise ValueError(f"empty backtest range {start} .. {end}")
+    if end > settings.backtest.holdout_start and not allow_holdout:
+        raise HoldoutViolation(
+            f"range end {end} reaches into the holdout starting "
+            f"{settings.backtest.holdout_start}; only the registered holdout run may load it"
+        )
     pair = settings.pairs[0]
     lo, hi = pd.Timestamp(_utc(start)), pd.Timestamp(_utc(end))
     frames: dict[str, pd.DataFrame] = {}
@@ -93,7 +107,7 @@ def load_dataset(
         if sliced.empty:
             raise DataValidationError(f"no {tf} candles in {start} .. {end}")
         if replace_after is not None:
-            sliced = _random_walk_after(sliced, tf, replace_after, rng)
+            sliced = _random_walk_after(sliced, tf, replace_after, rng, mirror)
         frames[tf] = sliced
     return Dataset(
         pair=pair,
@@ -106,9 +120,14 @@ def load_dataset(
 
 
 def _random_walk_after(
-    frame: pd.DataFrame, tf: str, cut: datetime, rng: np.random.Generator
+    frame: pd.DataFrame, tf: str, cut: datetime, rng: np.random.Generator, mirror: bool = False
 ) -> pd.DataFrame:
-    """Replace rows with ``open_at >= cut`` by a seeded random walk from the last close."""
+    """Replace rows with ``open_at >= cut`` by a seeded random walk from the last close.
+
+    ``mirror`` negates the walk's returns: the same seed gives a future and its mirror
+    image, so any future-dependent decision differs from the baseline in at least one.
+    The walk carries a drift of one sigma per candle (up, or down when mirrored) so the
+    replaced future clearly differs in direction from any real one."""
     out = frame.copy()
     mask = (out["open_at"] >= pd.Timestamp(cut)).to_numpy()
     n = int(mask.sum())
@@ -117,7 +136,10 @@ def _random_walk_after(
     first = int(mask.argmax())
     prev = float(out["close"].iloc[first - 1]) if first > 0 else float(out["open"].iloc[0])
     sigma = 0.03 * np.sqrt(TIMEFRAME_SECONDS[tf] / 86400)
-    closes = prev * np.exp(np.cumsum(rng.normal(0.0, sigma, n)))
+    returns = rng.normal(sigma, sigma, n)
+    if mirror:
+        returns = -returns
+    closes = prev * np.exp(np.cumsum(returns))
     opens = np.concatenate([[prev], closes[:-1]])
     wiggle = 1 + np.abs(rng.normal(0.0, sigma / 2, n))
     out.loc[mask, "open"] = opens

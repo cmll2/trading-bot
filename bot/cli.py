@@ -34,6 +34,7 @@ from typing import Any
 import pandas as pd
 
 from bot.backtest import command as backtest_command
+from bot.backtest.lookahead import LookAheadError
 from bot.clock import Clock, SystemClock
 from bot.config import (
     DEFAULT_CONFIG_PATH,
@@ -65,6 +66,7 @@ EXIT_OK = 0
 EXIT_REFUSED = 2
 EXIT_NOT_IMPLEMENTED = 3
 EXIT_DATA_ERROR = 4
+EXIT_LOOKAHEAD = 5
 
 DATA_TIMEFRAMES = ("15m", "4h", "1d")
 
@@ -417,11 +419,15 @@ def _backtest_command(args: argparse.Namespace, settings: Settings, strategy_id:
     except backtest_command.BacktestRefused as exc:
         _err(f"REFUSED: {exc}")
         return EXIT_REFUSED
+    except LookAheadError as exc:
+        _err(f"LOOK-AHEAD GUARD FAILED, no report written: {exc}")
+        return EXIT_LOOKAHEAD
     except NotImplementedError as exc:
         _err(f"{exc}")
         return EXIT_NOT_IMPLEMENTED
-    except (DataValidationError, OSError) as exc:
-        _err(f"DATA ERROR: {exc}")
+    except (DataValidationError, OSError, ValueError) as exc:
+        # InsufficientData, a bad snapshot or bad strategy parameters: no traceback.
+        _err(f"DATA ERROR: {type(exc).__name__}: {exc}")
         return EXIT_DATA_ERROR
     print(md_path.read_text(encoding="utf-8").splitlines()[0])
     print(f"results: {json_path}")
