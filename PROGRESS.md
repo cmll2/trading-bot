@@ -4,7 +4,7 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 
 ## Status
 
-- **Current phase:** M2 Backtester and v0 strategy built (branch `m2-backtest`); independent M2 audit (story 12, coordinator) and operator review pending.
+- **Current phase:** M2 Backtester and v0 strategy built (branch `m2-backtest`), independently audited (PASS with findings, `docs/audits/M2-audit.md`); findings F-1..F-9 fixed or recorded; operator review of M2 pending.
 - **Blocked on:** nothing. The real holdout run is an operator decision (one-shot, irreversible): `bot backtest --holdout`.
 
 ## Done
@@ -56,9 +56,21 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
     - Caveat that dominates the comparison: the protected €25 max position caps re-entries after equity grows, while buy-and-hold keeps its whole stake invested.
   - Changes to pre-existing tests (both required by the milestone, not weakenings): `tests/test_cli.py` stub test no longer expects `backtest v0_trend` to be unimplemented (dry-run and plumbing still are); `tests/test_config.py` maker/taker ban narrowed to "outside `fees:`" plus a stricter fees test (coordinator fee decision).
 
+- 2026-11-13 — **M2 audited: PASS with findings** (`docs/audits/M2-audit.md`, one High). Fixes on `m2-backtest`:
+  - **F-1 (High)**, commit e9a0bca: the backtest evaluates the protected halts on equity marked at every 15m close (the runner adds an engine tick at each 15m close where held equity can reach a threshold; a brute-force every-15m mode is tested identical). On a halt the engine cancels resting orders and keeps the position; the operator's manual reset is modelled as a **SIMULATED RESET at the next UTC daily close** (`backtest.simulated_halt_reset: next_daily_close`; a drawdown reset rebases the baseline), journaled as a consumed `operator_actions` row via `Engine.reset_halts`. Reports list halts per type, dates and effect. No risk-check code changed.
+  - **F-2/F-6**, commit 960d95d: the engine refuses any evaluated candle that is not closed (`FutureCandleError` → look-ahead failure, no report); the guard also compares every signal evaluated by cut + lag (whatever its label) and every fill up to the cut. Regression tests plant the auditor's off-by-one `ReplayMarketData` leak: `tests/test_lookahead.py::test_planted_off_by_one_adapter_leak_is_caught_and_no_report_written` and `::test_guard_alone_catches_the_off_by_one_adapter_leak` pass.
+  - **F-3**, commit d33e048: the per-phase submission budget is removed; the completion phase is a NEW intent linked by `intents.parent_intent_id` (schema v2, migration 0002), counting against `max_order_intents_per_day` with its own `max_submissions_per_intent` under the normal rules; architecture.md AD-28 amended.
+  - **F-4**, commit bc85010: every report carries "DIAGNOSTIC (not used for any decision): v0 without the EUR 25 absolute position cap" at both fee rates; not a configuration tried.
+  - **F-5**: M3 story notes (stale own feed must cancel resting orders; `reset_halts` reuse), commit 2b8cc77. **F-7**: the second real run committed (d347e93 audit commit). **F-9**: caveat added. **F-8**: fee decision awaits operator ratification.
+  - **Real runs recorded (all SIMULATED, pre-holdout 2017-01-01 → 2025-11-10, v0 SMA 200, configurations tried 1, guard PASSED):**
+    1. `results/2026-11-13_v0_trend_498d80c6edaa.*` (code 498d80c, clean) — first run, no intraday halts.
+    2. `results/2026-11-13_v0_trend_d438403cae55.*` (code d438403, docs-only change) — identical content to run 1.
+    3. `results/2026-11-13_v0_trend_d347e934d423.*` (code d347e93, clean) — after the audit fixes. Line 1: `VERDICT (SIMULATED): v0_trend does NOT beat buy-and-hold after costs (at both maker and taker fees): total return +689.4% vs buy-and-hold +4495.1% at maker fees, +648.9% vs +4476.4% at taker fees (2017-07-20..2025-11-10).` **Halts: 31 daily_loss, 0 total_drawdown** (both variants; first 2017-07-25 19:45, last 2021-05-19), each with a SIMULATED RESET at the next daily close; 0 working intents halted, so the halts changed no trade and the returns equal run 1. Maker: max DD 61.0%, Sharpe 0.89 [0.05, 1.70], 76 fills, fees €8.11. Taker: max DD 62.5%, Sharpe 0.86 [0.03, 1.68], 80 fills, fees €16.97. **Diagnostic without the €25 cap:** maker +1756.2% (Sharpe 0.94, max DD 63.0%, 46 halts), taker +1280.3% (Sharpe 0.87, 47 halts), still below buy-and-hold at both rates.
+  - Check after the fixes: 794 tests pass.
+
 ## Next
 
-1. Independent M2 audit (story 12, coordinator; the auditor plants a second leak of their own), then operator review of M2. Points to confirm at review: completion phase with its own submission count (AD-28 reading), stale-ticker no re-price during halts, backtest ticker from the last closed 15m close, published-fee assumption.
+1. Operator review of M2 (audit `docs/audits/M2-audit.md` and its fixes). To ratify: published-fee assumption (F-8), SIMULATED RESET policy at the next daily close (F-1), completion phase as a separate intent (F-3), backtest ticker from the last closed 15m close, kept resting order during exchange halts in the backtest (F-5 revisits it for M3).
 2. Operator decision, when ready: the one-shot holdout run `uv run bot backtest --holdout` (clean tree; recorded in `results/holdout_runs.jsonl` before it runs; needs data through 2026-11-10).
 3. Keep `bot data update` running at least weekly (15m API window ≈ 7.5 days); if it lapses, `bot data backfill-trades` closes the hole.
 4. M3: paper broker in dry-run (PaperBroker and fill model already shared), engine loop, restart recovery, reconciliation, kill-switch file (protected story), clock-skew check (audit M1 F-4).
@@ -129,13 +141,18 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 | 2026-11-13 | Backtest tick schedule: daily close + `execution.tick_seconds` (30 s placement lag), and every 15m boundary + 30 s while an intent is active; nothing in between | Equivalent outcomes for a daily strategy, ~13 s per 9-year run instead of millions of 30 s ticks (deviation from AD-2 "same tick_seconds") |
 | 2026-11-13 | Backtest ticker = close of the last closed, non-synthetic 15m candle ± `sim_half_spread_bps` (1 bp), timestamped at that candle's close | Strictly causal (deviation from AD-6 "execution candle open"); during exchange halts the ticker goes stale (audit M1 F-2) |
 | 2026-11-13 | Synthetic candles never fill; while the ticker is stale the resting order is kept (no re-price), so a halted window ends `not_filled` | Audit M1 F-2; refines AD-28 "a later risk rejection cancels" for halts |
-| 2026-11-13 | **Interpretation (flag at review): the AD-28 completion phase has its own submission count** (≤ 12, still under the daily 120 cap); a risk rejection during completion waits instead of cancelling; completion end → `dust` | Otherwise completion could never run after a full 12-submission window (review finding, story 6) |
+| 2026-11-13 | ~~Interpretation: the AD-28 completion phase has its own submission count~~ (superseded below, audit M2 F-3) | — |
 | 2026-11-13 | AD-27 settle timeout `execution.fill_settle_timeout_seconds: 60`: an unconfirmed cancel/fills beyond it halts with `reconcile_mismatch` | Review finding, story 6 |
 | 2026-11-13 | Taker report variant: engine prices at the aggressive side (ask/bid), PaperBroker fills at once with the taker fee + slippage; its buy-and-hold benchmark pays the same half spread | CON-06; v1 order logic still has no market orders |
 | 2026-11-13 | Look-ahead guard reruns each cutpoint twice: seeded random walk with +1σ drift and its mirror (negated returns), cumulative log-move clipped to ±5 | One random future catches a sign-of-tomorrow leak only ~50% of the time per cutpoint |
 | 2026-11-13 | Metrics: Sharpe on daily day-open equity, √365, rf 0; Sharpe CI = circular moving-block bootstrap (20-day blocks, 2000 resamples, seeded); buy-and-hold buys once at the first evaluation mark with slippage + fee, both marked at mid without exit cost; walk-forward = consecutive 365-day out-of-sample folds (one configuration: nothing to fit) | Architecture "Deferred": fold sizes and bootstrap method chosen in M2 |
 | 2026-11-13 | Change limit per strategy: `--change N` ≤ 5 and a `### Change N` entry under `## <strategy>` in `changes.md` | FR-17 |
 | 2026-11-13 | M2 built through BMAD `bmad-build-auto` with deviations: plans written and code implemented in the coordinator's main session (no implementation subagent), one independent quick-review subagent per story, every finding triaged in the plan's Review Triage Log; some commits were made before the review pass (interruption safety) with review fixes in follow-up commits; stories 4+5, 5+6, 8+9 fixes share commits where files overlap | Cross-story design held in one context; progress had to survive interruptions |
+| 2026-11-13 | **Completion phase = a NEW order intent** linked by `intents.parent_intent_id` (schema v2): counts against the protected `max_order_intents_per_day`, own `max_submissions_per_intent` under the normal rules, a risk/exchange rejection ends it, unsellable end → parent's signal `dust`. AD-28 amended | Audit M2 F-3 (coordinator): no reinterpretation of protected limits |
+| 2026-11-13 | **Backtest halts on intraday equity** (every 15m close via an event scan, equivalent to ticking every 15m); after a halt: cancel resting orders, keep position, **SIMULATED RESET at the next UTC daily close** (`backtest.simulated_halt_reset`, drawdown reset rebases the baseline), labelled in every report | Audit M2 F-1 (coordinator); a live engine ticks every 30 s |
+| 2026-11-13 | Engine refuses any evaluated candle that is not closed; the look-ahead guard compares signals by evaluation time and fills up to the cut | Audit M2 F-2/F-6 |
+| 2026-11-13 | Every report carries a no-€25-cap DIAGNOSTIC section (separate in-memory limits, backtest command only), not a configuration tried | Audit M2 F-4 (coordinator) |
+| 2026-11-13 | Every real backtest run is committed under `results/` and listed in PROGRESS.md (3 so far) | Audit M2 F-7: the run count must stay honest |
 
 ## Brief corrections (from research)
 
