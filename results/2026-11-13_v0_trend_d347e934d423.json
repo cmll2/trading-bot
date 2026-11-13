@@ -1,0 +1,943 @@
+{
+  "caveats": [
+    "Positions are capped by the protected risk limit max_position_abs_quote (EUR 25): once equity grows past it, re-entries invest at most that amount while buy-and-hold keeps its whole initial stake invested (it buys once and holds). The DIAGNOSTIC section shows the same strategy without that cap.",
+    "Exchange minimums and precision come from one public market snapshot and are applied to the whole history; historical minimums differed (Kraken's BTC minimum was about 0.002 BTC in earlier years, which would have mattered at EUR 20), and the simulated half spread is optimistic for 2017-2018, when BTC/EUR spreads were wider.",
+    "Fees are Kraken's published entry tier (maker 0.0040, taker 0.0080), not the account's tier (verified against fetch_trading_fee at live start, M6).",
+    "Execution model: post-only limit at the best bid/ask (last closed 15m close +/- 1 bp), re-priced every 30 min within 6 h after the daily close, plus a 24 h completion phase for an unsellable partial buy; filled only on a strict trade-through of a later closed 15m candle; synthetic (no-trade / exchange-halt) candles never fill. The taker variant fills at once at the ask/bid; its buy-and-hold benchmark pays the same half spread.",
+    "Equity of the strategy and of buy-and-hold is marked at mid, without exit costs.",
+    "Parameters were fixed before any evaluation; configurations tried: 1. The holdout window is excluded and its data not loaded."
+  ],
+  "change": 0,
+  "code_version": {
+    "git_commit": "d347e934d423f0e627911ad5962cda774086b084",
+    "git_dirty": false
+  },
+  "config_hash": "77c5e1f2eb254d480acca501f90786e6a60908dcce5f920869175012a4a18ade",
+  "configurations_tried": 1,
+  "data": {
+    "end_exclusive": "2025-11-11T00:00:00+00:00",
+    "hashes": {
+      "15m": "cab88bc38f5c5e8bbcb3e9285809022a8e61d4672640b4513e4c64748b31f5d6",
+      "1d": "61ea1545c7532a5476efda7daf784c2c736e32343b2ea5f7e07bbb9eecda343f"
+    },
+    "pair": "BTC/EUR",
+    "start": "2017-01-01T00:00:00+00:00"
+  },
+  "data_anomalies": [
+    {
+      "date": "2018-01-13",
+      "fills_on_day": {
+        "maker": 0,
+        "taker": 0
+      },
+      "flag": "no fill",
+      "note": "post-outage print: first trade at 20,000 EUR vs ~11,400-11,800 around it sets the 1d/4h open and high (audit M1 F-3)"
+    }
+  ],
+  "diagnostics": {
+    "no_abs_position_cap": {
+      "counts_as_configuration_tried": false,
+      "label": "DIAGNOSTIC (not used for any decision): v0 without the EUR 25 absolute position cap",
+      "maker": {
+        "buy_and_hold": {
+          "annualized_return": 0.5845795343,
+          "days": 3035,
+          "end": "2025-11-10T00:00:30+00:00",
+          "final_equity": 919.0284411396,
+          "initial_equity": 20.0,
+          "max_drawdown": 0.8251144693,
+          "round_trips": 0,
+          "sharpe": 1.0179480564,
+          "sharpe_ci_95": [
+            0.2817433956,
+            1.7456750021
+          ],
+          "start": "2017-07-20T00:00:30+00:00",
+          "time_in_market": 1.0,
+          "total_fees": 0.0796812749,
+          "total_return": 44.951422057,
+          "trades": 1,
+          "turnover": 0.0631884883
+        },
+        "halts": {
+          "daily_loss": 46
+        },
+        "strategy": {
+          "annualized_return": 0.4209214003,
+          "days": 3035,
+          "end": "2025-11-10T00:00:30+00:00",
+          "final_equity": 371.2448641244,
+          "initial_equity": 20.0,
+          "max_drawdown": 0.6303208439,
+          "round_trips": 38,
+          "sharpe": 0.9366327636,
+          "sharpe_ci_95": [
+            0.1332049843,
+            1.7088707889
+          ],
+          "start": "2017-07-20T00:00:30+00:00",
+          "time_in_market": 0.6001317523,
+          "total_fees": 65.9837724074,
+          "total_return": 17.5622432062,
+          "trades": 76,
+          "turnover": 79.5394491602
+        }
+      },
+      "max_position_abs_quote": "1E+12",
+      "note": "Same strategy, parameters and data; only the protected absolute cap (max_position_abs_quote) is lifted in a separate in-memory limits object for these diagnostic runs. Protected limits unchanged. Not a configuration tried (configurations_tried stays 1); never used to choose anything.",
+      "taker": {
+        "buy_and_hold": {
+          "annualized_return": 0.5838029454,
+          "days": 3035,
+          "end": "2025-11-10T00:00:30+00:00",
+          "final_equity": 915.2899738837,
+          "initial_equity": 20.0,
+          "max_drawdown": 0.8251144693,
+          "round_trips": 0,
+          "sharpe": 1.0173670272,
+          "sharpe_ci_95": [
+            0.2809546117,
+            1.7456750021
+          ],
+          "start": "2017-07-20T00:00:30+00:00",
+          "time_in_market": 1.0,
+          "total_fees": 0.1587301587,
+          "total_return": 44.7644986942,
+          "trades": 1,
+          "turnover": 0.0631948018
+        },
+        "halts": {
+          "daily_loss": 47
+        },
+        "strategy": {
+          "annualized_return": 0.3711824114,
+          "days": 3035,
+          "end": "2025-11-10T00:00:30+00:00",
+          "final_equity": 276.049048516,
+          "initial_equity": 20.0,
+          "max_drawdown": 0.6695603599,
+          "round_trips": 40,
+          "sharpe": 0.8672936818,
+          "sharpe_ci_95": [
+            0.0535655032,
+            1.6377973492
+          ],
+          "start": "2017-07-20T00:00:30+00:00",
+          "time_in_market": 0.6001317523,
+          "total_fees": 110.8366809946,
+          "total_return": 12.8024524258,
+          "trades": 80,
+          "turnover": 80.8671617909
+        }
+      }
+    }
+  },
+  "execution": {
+    "completion_window_hours": 24,
+    "fill_settle_timeout_seconds": 60,
+    "reprice_interval_minutes": 30,
+    "sim_half_spread_bps": "1",
+    "sim_timeframe": "15m",
+    "tick_seconds": 30,
+    "window_hours": 6
+  },
+  "fees": {
+    "maker": "0.0040",
+    "source": "published_schedule",
+    "taker": "0.0080"
+  },
+  "halt_policy": "protected halts are evaluated on equity marked at every 15m close; after a halt the resting orders are cancelled and the position kept, and the operator's manual reset is modelled as a SIMULATED RESET at the next UTC daily close (a total-drawdown reset also rebases the baseline)",
+  "holdout": {
+    "banner": null,
+    "end": "2026-11-10",
+    "runs_recorded": 0,
+    "start": "2025-11-11",
+    "status": "excluded (not loaded, not run)"
+  },
+  "label": "SIMULATED",
+  "limits_hash": "7193909170f44fc89540856a29e0ef5cc55e8ff8690e573ae30cd9f0c67c583c",
+  "lookahead_guard": {
+    "candles_compared": 13263,
+    "cutpoints": [
+      "2017-08-27T00:00:00.000Z",
+      "2017-10-01T00:00:00.000Z",
+      "2018-02-02T00:00:00.000Z",
+      "2018-04-14T00:00:00.000Z",
+      "2018-08-12T00:00:00.000Z",
+      "2019-01-05T00:00:00.000Z",
+      "2019-01-12T00:00:00.000Z",
+      "2019-07-20T00:00:00.000Z",
+      "2021-08-18T00:00:00.000Z",
+      "2022-09-06T00:00:00.000Z",
+      "2023-04-29T00:00:00.000Z",
+      "2024-09-10T00:00:00.000Z"
+    ],
+    "passed": true,
+    "seed": 20261113
+  },
+  "market_rules": {
+    "amount_min": "0.00006",
+    "amount_step": "1E-8",
+    "cost_min": "0.45",
+    "fetched_at": "2026-11-13",
+    "source": "ccxt 4.5.92 kraken.load_markets() (public AssetPairs)",
+    "tick_size": "0.1"
+  },
+  "params": {
+    "sma_days": 200
+  },
+  "results": {
+    "maker": {
+      "buy_and_hold": {
+        "annualized_return": 0.5845795343,
+        "days": 3035,
+        "end": "2025-11-10T00:00:30+00:00",
+        "final_equity": 919.0284411396,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.8251144693,
+        "round_trips": 0,
+        "sharpe": 1.0179480564,
+        "sharpe_ci_95": [
+          0.2817433956,
+          1.7456750021
+        ],
+        "start": "2017-07-20T00:00:30+00:00",
+        "time_in_market": 1.0,
+        "total_fees": 0.0796812749,
+        "total_return": 44.951422057,
+        "trades": 1,
+        "turnover": 0.0631884883
+      },
+      "cash": {
+        "annualized_return": 0.0,
+        "days": 3035,
+        "end": "2025-11-10T00:00:30+00:00",
+        "final_equity": 20.0,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.0,
+        "round_trips": 0,
+        "sharpe": 0.0,
+        "sharpe_ci_95": [
+          0.0,
+          0.0
+        ],
+        "start": "2017-07-20T00:00:30+00:00",
+        "time_in_market": 0.0,
+        "total_fees": 0.0,
+        "total_return": 0.0,
+        "trades": 0,
+        "turnover": 0.0
+      },
+      "halt_reason": "daily_loss: equity 21.60210949059924800 <= 21.6313026377393232000 (0.10 below day-open equity 24.03478070859924800)",
+      "halted": false,
+      "halts": {
+        "count_by_rule": {
+          "daily_loss": 31
+        },
+        "effect": "31 halt(s); 0 working intent(s) halted (resting orders cancelled, position kept); no order could be placed until the SIMULATED RESET at the next UTC daily close",
+        "events": [
+          {
+            "baseline_rebased": false,
+            "reason": "equity 21.60210949059924800 <= 21.6313026377393232000 (0.10 below day-open equity 24.03478070859924800)",
+            "reset_at": "2017-07-26T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-07-25T19:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 33.20071136859924800 <= 33.3778882397393232000 (0.10 below day-open equity 37.08654248859924800)",
+            "reset_at": "2017-08-16T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-08-15T14:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 35.50603604859924800 <= 35.5763525639393232000 (0.10 below day-open equity 39.52928062659924800)",
+            "reset_at": "2017-09-05T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-09-04T17:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 31.53966956859924800 <= 31.6202040077393232000 (0.10 below day-open equity 35.13356000859924800)",
+            "reset_at": "2017-09-14T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-09-13T12:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 28.95247112859924800 <= 29.3633012129393232000 (0.10 below day-open equity 32.62589023659924800)",
+            "reset_at": "2017-09-15T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-09-14T17:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 55.78483969659924800 <= 55.9287957317393232000 (0.10 below day-open equity 62.14310636859924800)",
+            "reset_at": "2017-11-11T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-11-10T20:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 49.94501940459924800 <= 50.7563115665393232000 (0.10 below day-open equity 56.39590174059924800)",
+            "reset_at": "2017-11-12T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-11-11T13:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 48.46417547259924800 <= 48.5592062765393232000 (0.10 below day-open equity 53.95467364059924800)",
+            "reset_at": "2017-11-13T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-11-12T06:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 121.91041040859924800 <= 124.6696515905393232000 (0.10 below day-open equity 138.52183510059924800)",
+            "reset_at": "2017-12-09T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-08T11:30:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 120.19903400859924800 <= 120.4820142089393232000 (0.10 below day-open equity 133.86890467659924800)",
+            "reset_at": "2017-12-10T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-09T16:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 109.26635888859924800 <= 110.6743173989393232000 (0.10 below day-open equity 122.97146377659924800)",
+            "reset_at": "2017-12-11T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-10T04:00:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 135.75242540859924800 <= 135.8508789653393232000 (0.10 below day-open equity 150.94542107259924800)",
+            "reset_at": "2017-12-21T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-20T22:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 124.27613660859924800 <= 125.9235871457393232000 (0.10 below day-open equity 139.91509682859924800)",
+            "reset_at": "2017-12-22T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-21T17:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 113.75922528459924800 <= 114.0456282377393232000 (0.10 below day-open equity 126.71736470859924800)",
+            "reset_at": "2017-12-23T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-22T03:00:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 109.93782245259924800 <= 111.7941615797393232000 (0.10 below day-open equity 124.21573508859924800)",
+            "reset_at": "2017-12-25T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-24T11:30:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 108.52140680859924800 <= 111.0675312941393232000 (0.10 below day-open equity 123.40836810459924800)",
+            "reset_at": "2017-12-31T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-30T13:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 118.73731722459924800 <= 119.9320583693393232000 (0.10 below day-open equity 133.25784263259924800)",
+            "reset_at": "2018-01-09T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-08T15:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 111.26967596859924800 <= 112.3377752597393232000 (0.10 below day-open equity 124.81975028859924800)",
+            "reset_at": "2018-01-12T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-11T04:30:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 100.36720160859924800 <= 101.0215504877393232000 (0.10 below day-open equity 112.24616720859924800)",
+            "reset_at": "2018-01-17T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-16T08:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 84.66280640859924800 <= 84.8943446477393232000 (0.10 below day-open equity 94.32704960859924800)",
+            "reset_at": "2018-01-18T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-17T10:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 94.72972640859924800 <= 95.2402190009393232000 (0.10 below day-open equity 105.82246555659924800)",
+            "reset_at": "2018-01-22T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-21T16:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 86.33391512859924800 <= 86.4363954533393232000 (0.10 below day-open equity 96.04043939259924800)",
+            "reset_at": "2018-01-23T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-22T20:30:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 81.25414729659924800 <= 81.7250768933393232000 (0.10 below day-open equity 90.80564099259924800)",
+            "reset_at": "2018-01-31T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-30T18:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 73.00531304859924800 <= 73.8209339861393232000 (0.10 below day-open equity 82.02325998459924800)",
+            "reset_at": "2018-02-02T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-02-01T13:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 63.71354588859924800 <= 64.8993274745393232000 (0.10 below day-open equity 72.11036386059924800)",
+            "reset_at": "2018-02-03T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-02-02T09:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 66.80207694459924800 <= 67.3800179009393232000 (0.10 below day-open equity 74.86668655659924800)",
+            "reset_at": "2018-02-05T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-02-04T15:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 91.30276044868553600 <= 91.3333716816169824000 (0.10 below day-open equity 101.48152409068553600)",
+            "reset_at": "2019-06-28T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2019-06-27T17:30:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 122.43209510058189600 <= 125.9512395449237064000 (0.10 below day-open equity 139.94582171658189600)",
+            "reset_at": "2021-01-12T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2021-01-11T14:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 121.57824814058189600 <= 121.5796047593237064000 (0.10 below day-open equity 135.08844973258189600)",
+            "reset_at": "2021-01-22T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2021-01-21T22:30:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 163.17569924458189600 <= 163.9510049417237064000 (0.10 below day-open equity 182.16778326858189600)",
+            "reset_at": "2021-02-24T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2021-02-23T09:00:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 137.38828806058189600 <= 137.9517349073237064000 (0.10 below day-open equity 153.27970545258189600)",
+            "reset_at": "2021-05-20T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2021-05-19T12:45:30.000Z"
+          }
+        ],
+        "intents_halted": 0
+      },
+      "order_states": {
+        "cancelled": 33,
+        "filled": 76
+      },
+      "orders_submitted": 109,
+      "risk_events": {
+        "halt:daily_loss": 31,
+        "halt_reset:daily_loss": 31,
+        "rejection:price_sanity": 4
+      },
+      "signal_outcomes": {
+        "filled": 76,
+        "no_action": 3155,
+        "rejected_by_risk": 4
+      },
+      "strategy": {
+        "annualized_return": 0.2820740687,
+        "days": 3035,
+        "end": "2025-11-10T00:00:30+00:00",
+        "final_equity": 157.8828466868,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.6104177691,
+        "round_trips": 38,
+        "sharpe": 0.8857332299,
+        "sharpe_ci_95": [
+          0.0514947666,
+          1.7031622619
+        ],
+        "start": "2017-07-20T00:00:30+00:00",
+        "time_in_market": 0.6001317523,
+        "total_fees": 8.1138153186,
+        "total_return": 6.8941423343,
+        "trades": 76,
+        "turnover": 17.5129556072
+      }
+    },
+    "taker": {
+      "buy_and_hold": {
+        "annualized_return": 0.5838029454,
+        "days": 3035,
+        "end": "2025-11-10T00:00:30+00:00",
+        "final_equity": 915.2899738837,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.8251144693,
+        "round_trips": 0,
+        "sharpe": 1.0173670272,
+        "sharpe_ci_95": [
+          0.2809546117,
+          1.7456750021
+        ],
+        "start": "2017-07-20T00:00:30+00:00",
+        "time_in_market": 1.0,
+        "total_fees": 0.1587301587,
+        "total_return": 44.7644986942,
+        "trades": 1,
+        "turnover": 0.0631948018
+      },
+      "cash": {
+        "annualized_return": 0.0,
+        "days": 3035,
+        "end": "2025-11-10T00:00:30+00:00",
+        "final_equity": 20.0,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.0,
+        "round_trips": 0,
+        "sharpe": 0.0,
+        "sharpe_ci_95": [
+          0.0,
+          0.0
+        ],
+        "start": "2017-07-20T00:00:30+00:00",
+        "time_in_market": 0.0,
+        "total_fees": 0.0,
+        "total_return": 0.0,
+        "trades": 0,
+        "turnover": 0.0
+      },
+      "halt_reason": "daily_loss: equity 21.66426132343766400 <= 21.6935376528938976000 (0.10 below day-open equity 24.10393072543766400)",
+      "halted": false,
+      "halts": {
+        "count_by_rule": {
+          "daily_loss": 31
+        },
+        "effect": "31 halt(s); 0 working intent(s) halted (resting orders cancelled, position kept); no order could be placed until the SIMULATED RESET at the next UTC daily close",
+        "events": [
+          {
+            "baseline_rebased": false,
+            "reason": "equity 21.66426132343766400 <= 21.6935376528938976000 (0.10 below day-open equity 24.10393072543766400)",
+            "reset_at": "2017-07-26T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-07-25T19:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 33.29622946543766400 <= 33.4739152308938976000 (0.10 below day-open equity 37.19323914543766400)",
+            "reset_at": "2017-08-16T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-08-15T14:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 35.60818598543766400 <= 35.6787039846938976000 (0.10 below day-open equity 39.64300442743766400)",
+            "reset_at": "2017-09-05T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-09-04T17:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 31.63040926543766400 <= 31.7111745828938976000 (0.10 below day-open equity 35.23463842543766400)",
+            "reset_at": "2017-09-14T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-09-13T12:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 29.03576810543766400 <= 29.4477792456938976000 (0.10 below day-open equity 32.71975471743766400)",
+            "reset_at": "2017-09-15T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-09-14T17:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 55.94532665743766400 <= 56.0896960188938976000 (0.10 below day-open equity 62.32188446543766400)",
+            "reset_at": "2017-11-11T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-11-10T20:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 50.08870666943766400 <= 50.9023319160938976000 (0.10 below day-open equity 56.55814657343766400)",
+            "reset_at": "2017-11-12T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-11-11T13:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 48.60360272143766400 <= 48.6989061060938976000 (0.10 below day-open equity 54.10989567343766400)",
+            "reset_at": "2017-11-13T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-11-12T06:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 122.26112402543766400 <= 125.0283020520938976000 (0.10 below day-open equity 138.92033561343766400)",
+            "reset_at": "2017-12-09T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-08T11:30:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 120.54482442543766400 <= 120.8286178896938976000 (0.10 below day-open equity 134.25401987743766400)",
+            "reset_at": "2017-12-10T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-09T16:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 109.58069874543766400 <= 110.9927067996938976000 (0.10 below day-open equity 123.32522977743766400)",
+            "reset_at": "2017-12-11T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-10T04:00:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 136.14295902543766400 <= 136.2416950092938976000 (0.10 below day-open equity 151.37966112143766400)",
+            "reset_at": "2017-12-21T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-20T22:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 124.63365582543766400 <= 126.2858448648938976000 (0.10 below day-open equity 140.31760540543766400)",
+            "reset_at": "2017-12-22T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-21T17:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 114.08648998943766400 <= 114.3737160528938976000 (0.10 below day-open equity 127.08190672543766400)",
+            "reset_at": "2017-12-23T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-22T03:00:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 110.25409394143766400 <= 112.1157724908938976000 (0.10 below day-open equity 124.57308054543766400)",
+            "reset_at": "2017-12-25T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-24T11:30:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 108.83360362543766400 <= 111.3870518724938976000 (0.10 below day-open equity 123.76339096943766400)",
+            "reset_at": "2017-12-31T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2017-12-30T13:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 119.07890264943766400 <= 120.2770799652938976000 (0.10 below day-open equity 133.64119996143766400)",
+            "reset_at": "2018-01-09T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-08T15:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 111.58977886543766400 <= 112.6609500108938976000 (0.10 below day-open equity 125.17883334543766400)",
+            "reset_at": "2018-01-12T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-11T04:30:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 100.65594082543766400 <= 101.3121713028938976000 (0.10 below day-open equity 112.56907922543766400)",
+            "reset_at": "2018-01-17T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-16T08:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 84.90636802543766400 <= 85.1385715428938976000 (0.10 below day-open equity 94.59841282543766400)",
+            "reset_at": "2018-01-18T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-17T10:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 95.00224802543766400 <= 95.5142083776938976000 (0.10 below day-open equity 106.12689819743766400)",
+            "reset_at": "2018-01-22T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-21T16:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 86.58228410543766400 <= 86.6850584412938976000 (0.10 below day-open equity 96.31673160143766400)",
+            "reset_at": "2018-01-23T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-22T20:30:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 81.48790305743766400 <= 81.9601866012938976000 (0.10 below day-open equity 91.06687400143766400)",
+            "reset_at": "2018-01-31T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-01-30T18:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 73.21533898543766400 <= 74.0333054604938976000 (0.10 below day-open equity 82.25922828943766400)",
+            "reset_at": "2018-02-02T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-02-01T13:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 63.89684174543766400 <= 65.0860337280938976000 (0.10 below day-open equity 72.31781525343766400)",
+            "reset_at": "2018-02-03T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-02-02T09:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 66.99425772943766400 <= 67.5738604776938976000 (0.10 below day-open equity 75.08206719743766400)",
+            "reset_at": "2018-02-05T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2018-02-04T15:45:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 89.03927065346794400 <= 89.4175478113211496000 (0.10 below day-open equity 99.35283090146794400)",
+            "reset_at": "2019-06-28T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2019-06-27T17:30:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 120.14023866168965600 <= 123.8225019423206904000 (0.10 below day-open equity 137.58055771368965600)",
+            "reset_at": "2021-01-12T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2021-01-11T14:15:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 119.28997054168965600 <= 119.4691905591206904000 (0.10 below day-open equity 132.74354506568965600)",
+            "reset_at": "2021-01-22T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2021-01-21T22:30:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 160.71306882968965600 <= 161.6629939719206904000 (0.10 below day-open equity 179.62554885768965600)",
+            "reset_at": "2021-02-24T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2021-02-23T09:00:30.000Z"
+          },
+          {
+            "baseline_rebased": false,
+            "reason": "equity 135.03374378168965600 <= 135.7726980651206904000 (0.10 below day-open equity 150.85855340568965600)",
+            "reset_at": "2021-05-20T00:00:30.000Z",
+            "rule": "daily_loss",
+            "simulated_reset": true,
+            "triggered_at": "2021-05-19T12:45:30.000Z"
+          }
+        ],
+        "intents_halted": 0
+      },
+      "order_states": {
+        "filled": 80
+      },
+      "orders_submitted": 80,
+      "risk_events": {
+        "halt:daily_loss": 31,
+        "halt_reset:daily_loss": 31
+      },
+      "signal_outcomes": {
+        "filled": 80,
+        "no_action": 3155
+      },
+      "strategy": {
+        "annualized_return": 0.2739843736,
+        "days": 3035,
+        "end": "2025-11-10T00:00:30+00:00",
+        "final_equity": 149.7878885979,
+        "initial_equity": 20.0,
+        "max_drawdown": 0.6253031207,
+        "round_trips": 40,
+        "sharpe": 0.8631625412,
+        "sharpe_ci_95": [
+          0.028210846,
+          1.6820142817
+        ],
+        "start": "2017-07-20T00:00:30+00:00",
+        "time_in_market": 0.6001317523,
+        "total_fees": 16.9675615662,
+        "total_return": 6.4893944299,
+        "trades": 80,
+        "turnover": 18.9863053998
+      }
+    }
+  },
+  "slippage_bps": "5",
+  "strategy": "v0_trend",
+  "verdict": {
+    "beats_at_maker": false,
+    "beats_at_taker": false,
+    "beats_buy_and_hold_after_costs": false,
+    "line": "VERDICT (SIMULATED): v0_trend does NOT beat buy-and-hold after costs (at both maker and taker fees): total return +689.4% vs buy-and-hold +4495.1% at maker fees, +648.9% vs +4476.4% at taker fees (2017-07-20..2025-11-10)."
+  },
+  "walk_forward": [
+    {
+      "buy_and_hold_return": 2.248783766476424,
+      "end": "2018-07-20T00:00:30+00:00",
+      "fills": 6,
+      "start": "2017-07-20T00:00:30+00:00",
+      "strategy_max_drawdown": 0.6104177690970191,
+      "strategy_return": 2.2448135030445986
+    },
+    {
+      "buy_and_hold_return": 0.4592546030288996,
+      "end": "2019-07-20T00:00:30+00:00",
+      "fills": 3,
+      "start": "2018-07-20T00:00:30+00:00",
+      "strategy_max_drawdown": 0.1544541630552,
+      "strategy_return": 0.4144950482447473
+    },
+    {
+      "buy_and_hold_return": -0.14748583891668482,
+      "end": "2020-07-19T00:00:30+00:00",
+      "fills": 16,
+      "start": "2019-07-20T00:00:30+00:00",
+      "strategy_max_drawdown": 0.3022769031797946,
+      "strategy_return": -0.24152128217582322
+    },
+    {
+      "buy_and_hold_return": 2.3276657613406346,
+      "end": "2021-07-19T00:00:30+00:00",
+      "fills": 1,
+      "start": "2020-07-19T00:00:30+00:00",
+      "strategy_max_drawdown": 0.34032518229860464,
+      "strategy_return": 0.9784520861056968
+    },
+    {
+      "buy_and_hold_return": -0.18084522540118728,
+      "end": "2022-07-19T00:00:30+00:00",
+      "fills": 16,
+      "start": "2021-07-19T00:00:30+00:00",
+      "strategy_max_drawdown": 0.08901532929627431,
+      "strategy_return": -0.0653509839065989
+    },
+    {
+      "buy_and_hold_return": 0.19641497975175823,
+      "end": "2023-07-19T00:00:30+00:00",
+      "fills": 5,
+      "start": "2022-07-19T00:00:30+00:00",
+      "strategy_max_drawdown": 0.04273827454962875,
+      "strategy_return": 0.06544129491000111
+    },
+    {
+      "buy_and_hold_return": 1.1937043288246816,
+      "end": "2024-07-18T00:00:30+00:00",
+      "fills": 8,
+      "start": "2023-07-19T00:00:30+00:00",
+      "strategy_max_drawdown": 0.07997715113800907,
+      "strategy_return": 0.1582428356437935
+    },
+    {
+      "buy_and_hold_return": 0.7420311047222568,
+      "end": "2025-07-18T00:00:30+00:00",
+      "fills": 14,
+      "start": "2024-07-18T00:00:30+00:00",
+      "strategy_max_drawdown": 0.08480045288345694,
+      "strategy_return": 0.022850002951961317
+    },
+    {
+      "buy_and_hold_return": -0.11992937572638533,
+      "end": "2025-11-10T00:00:30+00:00",
+      "fills": 7,
+      "start": "2025-07-18T00:00:30+00:00",
+      "strategy_max_drawdown": 0.034532529665353695,
+      "strategy_return": -0.028472289520629676
+    }
+  ],
+  "warmup_candles": 200
+}
