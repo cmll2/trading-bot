@@ -14,9 +14,12 @@ Because candles enter a backtest only through the dataset loader, a strategy tha
 "the loaded frame" through a closure, a module global refreshed on load, or a column
 precomputed from it sees the random future in the rerun and its past targets change.
 
-Known limit: a strategy that reads the Parquet files itself, or caches the baseline's
-frame in a global it never refreshes, is not caught by this guard; the import rules
-(strategy/ may not import data/) and review cover that.
+Known limits: the mirror negates only returns (wicks and volume are identical in both
+reruns), so a leak that depends only on the SIZE of a future move, its range or its volume
+is caught only if the random walk itself changes the decision. A strategy that reads the
+Parquet files itself, or caches the baseline's frame in a global it never refreshes, is
+not caught by this guard; the import rules (strategy/ may not import data/) and review
+cover that.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from bot.backtest import dataset as dataset_mod
-from bot.backtest.runner import RunResult, run_backtest
+from bot.backtest.runner import InsufficientData, RunResult, run_backtest
 from bot.config import Settings
 from bot.store import parse_iso
 
@@ -68,7 +71,7 @@ def check_prefix_invariance(
     eligible = [c for c in candles if parse_iso(c) + step >= baseline.eval_start]
     eligible = eligible[:-1]
     if not eligible:
-        raise LookAheadError("no candle after the warm-up to cut at: guard cannot run")
+        raise InsufficientData("no candle after the warm-up to cut at: guard cannot run")
     rng = random.Random(seed)  # noqa: S311 - reproducible sampling, not security
     cuts = sorted(rng.sample(eligible, min(n, len(eligible))))
     lag = timedelta(seconds=settings.execution.tick_seconds)
@@ -107,5 +110,5 @@ def check_prefix_invariance(
                         f"replaced ({'mirrored ' if mirror else ''}random walk, cutpoint "
                         f"{i + 1}/{len(cuts)})"
                     )
-                compared += 1
+                compared += 0 if mirror else 1  # distinct candles, not reruns
     return LookAheadReport(cutpoints=tuple(cuts), candles_compared=compared, seed=seed)

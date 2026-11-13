@@ -83,18 +83,24 @@ def test_planted_t_plus_1_leak_raises_and_no_report_is_written(tmp_path, leaky) 
     assert not env.results_dir.exists() or list(env.results_dir.iterdir()) == []
 
 
-def test_cli_exits_with_the_look_ahead_code_and_writes_nothing(tmp_path, leaky, capsys) -> None:
+def test_cli_exits_with_the_look_ahead_code_and_writes_nothing(
+    tmp_path, leaky, capsys, monkeypatch
+) -> None:
     env = make_env(tmp_path, ZIGZAG, wiggle=0.01)
+    real = cli.strategy_class_for
+    monkeypatch.setattr(
+        cli,
+        "strategy_class_for",
+        lambda sid, mode: LeakyTomorrow if sid == LeakyTomorrow.id else real(sid, mode),
+    )
     code = cli.main(
         ["backtest", "--config", str(env.config_path), "--env-file", str(env.env_path),
          "--strategy", LeakyTomorrow.id, "--end", end_date(env, len(ZIGZAG)).isoformat()],
         env={},
     )  # fmt: skip
-    # The leaky strategy is not in the registry, so the CLI refuses it before running:
-    # the guard itself is exercised through ``execute`` above and the direct call below.
-    assert code in (cli.EXIT_REFUSED, cli.EXIT_LOOKAHEAD)
+    assert code == cli.EXIT_LOOKAHEAD
     assert not env.results_dir.exists() or list(env.results_dir.iterdir()) == []
-    capsys.readouterr()
+    assert "LOOK-AHEAD GUARD FAILED" in capsys.readouterr().err
 
 
 def test_guard_reruns_the_whole_pipeline_with_fresh_loads(tmp_path, monkeypatch) -> None:

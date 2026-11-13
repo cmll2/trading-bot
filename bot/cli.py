@@ -35,6 +35,7 @@ import pandas as pd
 
 from bot.backtest import command as backtest_command
 from bot.backtest.lookahead import LookAheadError
+from bot.backtest.runner import InsufficientData
 from bot.clock import Clock, SystemClock
 from bot.config import (
     DEFAULT_CONFIG_PATH,
@@ -425,8 +426,7 @@ def _backtest_command(args: argparse.Namespace, settings: Settings, strategy_id:
     except NotImplementedError as exc:
         _err(f"{exc}")
         return EXIT_NOT_IMPLEMENTED
-    except (DataValidationError, OSError, ValueError) as exc:
-        # InsufficientData, a bad snapshot or bad strategy parameters: no traceback.
+    except (DataValidationError, OSError, InsufficientData) as exc:
         _err(f"DATA ERROR: {type(exc).__name__}: {exc}")
         return EXIT_DATA_ERROR
     print(md_path.read_text(encoding="utf-8").splitlines()[0])

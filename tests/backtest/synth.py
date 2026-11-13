@@ -46,6 +46,7 @@ def frames_from_path(
     start_price: float,
     wiggle: float = 0.001,
     synthetic_15m: set[int] | None = None,
+    overrides: dict[int, tuple[float, float, float, float]] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """(1d, 15m) cache frames. 15m candle j opens at the previous close and closes at
     ``closes_15m[j]``; high/low widen by ``wiggle``. ``synthetic_15m`` marks 15m rows as
@@ -60,6 +61,8 @@ def frames_from_path(
     lows = np.minimum(opens, closes) * (1 - wiggle)
     vol = np.ones(n)
     source = np.array(["archive"] * n, dtype=object)
+    for j, (o, h, lo, c) in (overrides or {}).items():
+        opens[j], highs[j], lows[j], closes[j] = o, h, lo, c
     for j in sorted(synthetic_15m):
         prev = closes[j - 1]
         opens[j] = highs[j] = lows[j] = closes[j] = prev
@@ -73,7 +76,7 @@ def frames_from_path(
             "low": lows,
             "close": closes,
             "volume": vol,
-            "trades": pd.array([pd.NA if s == "synthetic" else 1 for s in source], "Int64"),
+            "trades": pd.array([0 if s == "synthetic" else 1 for s in source], "Int64"),
             "source": source,
         }
     )
@@ -101,6 +104,7 @@ def make_env(
     start_price: float | None = None,
     sma_days: int = 3,
     synthetic_15m: set[int] | None = None,
+    overrides: dict[int, tuple[float, float, float, float]] | None = None,
     wiggle: float = 0.001,
     initial_quote: str = "20",
     config_edits: dict[str, object] | None = None,
@@ -126,7 +130,12 @@ def make_env(
     settings = load_settings(config_path, env_path)
     sp = start_price if start_price is not None else daily_closes[0]
     d1, d15 = frames_from_path(
-        start, path_15m(daily_closes, sp), sp, wiggle=wiggle, synthetic_15m=synthetic_15m
+        start,
+        path_15m(daily_closes, sp),
+        sp,
+        wiggle=wiggle,
+        synthetic_15m=synthetic_15m,
+        overrides=overrides,
     )
     write_cache(cache_path(settings.paths.var_dir, "BTC/EUR", "1d"), d1)
     write_cache(cache_path(settings.paths.var_dir, "BTC/EUR", "15m"), d15)

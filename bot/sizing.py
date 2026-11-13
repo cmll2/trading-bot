@@ -12,7 +12,7 @@ precision come from ``MarketRules`` (exchange metadata), never hardcoded.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
 from bot.broker.base import MarketRules
 from bot.broker.fill_model import BPS
@@ -67,3 +67,30 @@ def sell_qty(position: Decimal, rules: MarketRules) -> Decimal | NoOrder:
     if qty <= 0:
         return NoOrder("no_action", "no base position to sell")
     return qty
+
+
+def ceil_step(x: Decimal, step: Decimal) -> Decimal:
+    return (x / step).to_integral_value(rounding=ROUND_CEILING) * step
+
+
+def sellable_threshold(price: Decimal, rules: MarketRules, limits: RiskLimits) -> Decimal:
+    """Smallest position that stays sellable after the worst loss the limits allow (AD-13):
+    P >= amount_min and P x price x (1 - max_total_drawdown) >= cost_min."""
+    worst = price * (1 - limits.max_total_drawdown_fraction)
+    return max(rules.amount_min, rules.cost_min / worst)
+
+
+def sellable(position: Decimal, price: Decimal, rules: MarketRules, limits: RiskLimits) -> bool:
+    return position >= sellable_threshold(price, rules, limits)
+
+
+def completion_qty(
+    position: Decimal, price: Decimal, rules: MarketRules, limits: RiskLimits
+) -> Decimal | NoOrder:
+    """AD-28 completion phase: the smallest buy that makes the position sellable and is
+    itself a valid order (>= amount_min, >= cost_min). Rounded UP to the step only to reach
+    that threshold; the order still passes every risk check (cash, max position)."""
+    gap = sellable_threshold(price, rules, limits) - position
+    if gap <= 0:
+        return NoOrder("no_action", "position already sellable")
+    return ceil_step(max(gap, rules.amount_min, rules.cost_min / price), rules.amount_step)

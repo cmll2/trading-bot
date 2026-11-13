@@ -55,6 +55,7 @@ class RunResult:
     last_tick: datetime
     orders_submitted: int
     order_outcomes: dict[str, int] = field(default_factory=dict)
+    orders: list[dict[str, str | None]] = field(default_factory=list)
 
 
 def _deterministic_ids(variant: str):  # noqa: ANN202
@@ -115,22 +116,7 @@ def run_backtest(
         store,
         strategy,
         settings.risk,
-        EngineConfig(
-            mode="backtest",
-            pair=dataset.pair,
-            timeframe=tf,
-            window=window,
-            reprice_interval=timedelta(minutes=settings.execution.reprice_interval_minutes),
-            completion_window=timedelta(hours=settings.execution.completion_window_hours),
-            approval="autonomous",
-            slippage_bps=settings.slippage_bps,
-            quote_is_fiat=snap.rules.quote in settings.fiat_currencies,
-            git_commit="backtest",
-            git_dirty=False,
-            config_hash=config_hash(settings),
-            limits_hash=limits_hash(settings),
-            pricing="passive" if variant == "maker" else "aggressive",
-        ),
+        backtest_engine_config(settings, dataset.pair, tf, snap.rules.quote, variant),
         new_cl_ord_id=_deterministic_ids(variant),
     )
     engine.start()
@@ -163,6 +149,28 @@ def run_backtest(
         "amount_step": str(snap.rules.amount_step),
     }
     return _collect(store, variant, sid, halted, eval_start, last_tick, settings, rules_info)
+
+
+def backtest_engine_config(
+    settings: Settings, pair: str, timeframe: str, quote: str, variant: Variant
+) -> EngineConfig:
+    """The backtest's engine settings: approval forced to autonomous (AD-1)."""
+    return EngineConfig(
+        mode="backtest",
+        pair=pair,
+        timeframe=timeframe,
+        window=timedelta(hours=settings.execution.window_hours),
+        reprice_interval=timedelta(minutes=settings.execution.reprice_interval_minutes),
+        completion_window=timedelta(hours=settings.execution.completion_window_hours),
+        approval="autonomous",
+        slippage_bps=settings.slippage_bps,
+        quote_is_fiat=quote in settings.fiat_currencies,
+        git_commit="backtest",
+        git_dirty=False,
+        config_hash=config_hash(settings),
+        limits_hash=limits_hash(settings),
+        pricing="passive" if variant == "maker" else "aggressive",
+    )
 
 
 def _floor(t: datetime, step: timedelta) -> datetime:
@@ -210,7 +218,15 @@ def _collect(
         r["state"]: int(r["n"])
         for r in store.all("SELECT state, count(*) AS n FROM orders GROUP BY state")
     }
+    orders = [
+        dict(r)
+        for r in store.all(
+            "SELECT o.intent_id, o.attempt_no, o.side, o.qty, o.limit_price, o.state, "
+            "o.reject_reason, o.created_at, o.filled_qty FROM orders o ORDER BY o.order_id"
+        )
+    ]
     return RunResult(
+        orders=orders,
         variant=variant,
         strategy_id=sid,
         signals=signals,

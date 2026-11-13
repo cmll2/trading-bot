@@ -53,6 +53,7 @@ class ReplayMarketData:
         self._frames: dict[tuple[str, str], pd.DataFrame] = {}
         self._hashes: dict[tuple[str, str], str] = {}
         self._open_ns: dict[tuple[str, str], np.ndarray] = {}
+        self._frames_only = False
 
     @classmethod
     def from_frames(
@@ -67,6 +68,7 @@ class ReplayMarketData:
         disk, so whatever the dataset loader produced is exactly what every consumer sees.
         """
         md = cls(Path("."), sorted({p for p, _ in frames}), clock, data_settings)
+        md._frames_only = True  # never fall back to reading the cache from disk
         for key, frame in frames.items():
             md._frames[key] = frame
             md._hashes[key] = data_hash(frame)
@@ -81,6 +83,8 @@ class ReplayMarketData:
                 f"{list(self._data_settings.timeframes)}"
             )
         key = (pair, timeframe)
+        if key not in self._frames and self._frames_only:
+            raise ValueError(f"{pair} {timeframe} is not in the loaded dataset")
         if key not in self._frames:
             path = cache_path(self._var_dir, pair, timeframe)
             frame = read_cache_checked(path)

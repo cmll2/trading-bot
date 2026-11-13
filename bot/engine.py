@@ -43,7 +43,14 @@ from bot.data.market import MarketData
 from bot.risk.checks import ProposedOrder, RiskContext, RiskDecision, check_order
 from bot.risk.halts import HaltContext, evaluate_halts
 from bot.risk.limits import RiskLimits
-from bot.sizing import NoOrder, SizingInput, buy_qty, sell_qty
+from bot.sizing import (
+    NoOrder,
+    SizingInput,
+    buy_qty,
+    completion_qty,
+    sell_qty,
+    sellable,
+)
 from bot.store import Store, dec, iso, parse_iso
 from bot.strategy.base import Mode, Strategy
 
@@ -383,15 +390,14 @@ class Engine:
             self._set_outcome(intent["signal_id"], outcome, reason)
 
     def _price(self, side: str, ticker: Ticker) -> Decimal:
-        """Best bid for a buy / best ask for a sell, rounded passively to the tick (AD-5).
-        The taker report variant prices at the other side of the book."""
+        """Passive (AD-5): best bid for a buy, best ask for a sell, rounded away from the
+        book to the tick. The taker report variant takes the other side (ask for a buy,
+        bid for a sell)."""
         tick = self.rules.tick_size
-        aggressive = self.cfg.pricing == "aggressive"
-        if (side == "buy") != aggressive:
-            px, rounding = (ticker.ask, ROUND_CEILING) if aggressive else (ticker.bid, ROUND_FLOOR)
-        else:
-            px, rounding = (ticker.bid, ROUND_FLOOR) if aggressive else (ticker.ask, ROUND_CEILING)
-        return (px / tick).to_integral_value(rounding=rounding) * tick
+        use_ask = (side == "sell") != (self.cfg.pricing == "aggressive")
+        if use_ask:
+            return (ticker.ask / tick).to_integral_value(rounding=ROUND_CEILING) * tick
+        return (ticker.bid / tick).to_integral_value(rounding=ROUND_FLOOR) * tick
 
     def _fee_rate(self) -> Decimal:
         return self._fees.taker if self.cfg.pricing == "aggressive" else self._fees.maker
@@ -545,7 +551,13 @@ class Engine:
                             submit = (intent_id, sized, price, cl, decision)
         if submit is not None:
             intent_id, qty, price, cl, decision = submit
-            self._place(self._intent(intent_id), 1, qty, price, cl, decision, now)
+            result = self._place(self._intent(intent_id), 1, qty, price, cl, decision, now)
+            if result == "cross":
+                self._resubmit(self._intent(intent_id), now, ticker)  # AD-5 immediate re-price
+            elif result == "rejected":
+                self._finish(
+                    intent_id, now, "cancelled", "rejected_by_risk", "exchange rejected the order"
+                )
         return True
 
     def _decide(self, target: Decimal) -> tuple[str | None, str]:
@@ -719,18 +731,54 @@ class Engine:
         self._sync_order(order, now)
 
     def _advance_intent(self, now: datetime, ticker: Ticker) -> None:
+        """AD-5/AD-28: ingest fills, then re-price, end the window or run the completion
+        phase. A new order is placed only once the previous one is confirmed closed and
+        its fills are ingested (AD-27)."""
         intent = self._active_intent()
         if intent is None or intent["state"] == "awaiting_approval":
             return
+        intent_id = intent["intent_id"]
         self._ingest_fills(intent, now)
-        order = self._live_order(intent["intent_id"])
+        order = self._live_order(intent_id)
         if order is not None:
             self._sync_order(order, now)
-        if self._target_reached(intent["intent_id"]):
-            self._finish(intent["intent_id"], now, "done", "filled", None)
+        completing = intent["state"] == "completing"
+
+        if not completing and self._target_reached(intent_id):
+            self._finish(intent_id, now, "done", "filled", None)
             return
-        if now >= parse_iso(intent["window_end_at"]):
-            self._end_window(intent, now)
+        if completing and self._sellable_now(ticker):
+            self._cancel_live(intent, now)
+            self._finish(intent_id, now, "done", "partially_filled", "completion reached")
+            return
+
+        end = parse_iso(intent["completion_end_at"] if completing else intent["window_end_at"])
+        if now >= end:
+            if completing:
+                self._end_completion(intent, now, ticker)
+            else:
+                self._end_window(intent, now, ticker)
+            return
+
+        if now - ticker.ts > timedelta(seconds=self.limits.stale_ticker_seconds):
+            # Exchange halted or feed stale (synthetic candles, audit M1 F-2): keep the
+            # resting order (it cannot fill on synthetic candles) instead of cancelling and
+            # being refused by the stale_ticker rule; the window end still applies.
+            return
+        order = self._live_order(intent_id)
+        if order is not None:
+            if order["state"] not in ("open", "partially_filled"):
+                return  # unknown or cancel pending: resolved on a later tick
+            accepted = parse_iso(order["accepted_at"] or order["created_at"])
+            if now < accepted + self.cfg.reprice_interval:
+                return
+            self._cancel_live(intent, now)
+            if self._live_order(intent_id) is not None:
+                return  # cancel not confirmed or fills not settled yet (AD-27)
+            if not completing and self._target_reached(intent_id):
+                self._finish(intent_id, now, "done", "filled", None)
+                return
+        self._resubmit(self._intent(intent_id), now, ticker)
 
     def _target_reached(self, intent_id: int) -> bool:
         return (
@@ -740,13 +788,101 @@ class Engine:
             is not None
         )
 
-    def _end_window(self, intent, now: datetime) -> None:  # noqa: ANN001
-        self._cancel_live(intent, now)
-        if self._target_reached(intent["intent_id"]):
-            self._finish(intent["intent_id"], now, "done", "filled", None)
+    def _sellable_now(self, ticker: Ticker) -> bool:
+        mid = (ticker.bid + ticker.ask) / 2
+        return sellable(self.store.position(self.cfg.pair), mid, self.rules, self.limits)
+
+    def _resubmit(self, intent, now: datetime, ticker: Ticker) -> None:  # noqa: ANN001
+        """Place the intent's next submission at the current best price (re-price). A
+        post-only cross re-prices immediately; the risk caps bound the loop."""
+        intent_id = intent["intent_id"]
+        side = intent["side"]
+        completing = intent["state"] == "completing"
+        for _ in range(self.limits.max_submissions_per_intent + 1):
+            attempt = (
+                1
+                + self.store.one("SELECT count(*) FROM orders WHERE intent_id = ?", (intent_id,))[0]
+            )
+            price = self._price(side, ticker)
+            mid = (ticker.bid + ticker.ask) / 2
+            position = self.store.position(self.cfg.pair)
+            if completing:
+                sized = completion_qty(position, mid, self.rules, self.limits)
+            else:
+                target = Decimal(
+                    self.store.one(
+                        "SELECT target_fraction FROM signals WHERE signal_id = ?",
+                        (intent["signal_id"],),
+                    )[0]
+                )
+                sized = self._size(side, target, price, now, mid)
+            filled = Decimal(self._intent(intent_id)["filled_qty"])
+            if isinstance(sized, NoOrder):
+                outcome = "partially_filled" if filled > 0 else sized.outcome
+                self._finish(intent_id, now, "done", outcome, sized.reason)
+                return
+            cl = self._new_id()
+            proposed = ProposedOrder(intent_id, attempt, False, side, sized, price, cl)
+            ctx = self._risk_context(now, ticker, Decimal(intent["reference_price"]), intent_id)
+            decision = check_order(proposed, ctx, self.limits)
+            if not decision.approved:
+                self._risk_event(
+                    now, "rejection", decision.rule or "", intent_id, decision.reason or "", {}
+                )
+                outcome = "partially_filled" if filled > 0 else "rejected_by_risk"
+                self._finish(
+                    intent_id, now, "cancelled", outcome, f"{decision.rule}: {decision.reason}"
+                )
+                return
+            result = self._place(intent, attempt, sized, price, cl, decision, now)
+            if result == "cross":
+                continue  # AD-5: immediate re-price, counted toward the caps
+            if result == "rejected":
+                outcome = "partially_filled" if filled > 0 else "rejected_by_risk"
+                self._finish(intent_id, now, "cancelled", outcome, "exchange rejected the order")
             return
-        filled = Decimal(self._intent(intent["intent_id"])["filled_qty"])
+
+    def _end_window(self, intent, now: datetime, ticker: Ticker) -> None:  # noqa: ANN001
+        intent_id = intent["intent_id"]
+        self._cancel_live(intent, now)
+        if self._live_order(intent_id) is not None:
+            return  # cancel not confirmed yet; retried next tick
+        if self._target_reached(intent_id):
+            self._finish(intent_id, now, "done", "filled", None)
+            return
+        filled = Decimal(self._intent(intent_id)["filled_qty"])
         if filled == 0:
-            self._finish(intent["intent_id"], now, "done", "not_filled", "window ended unfilled")
+            self._finish(intent_id, now, "done", "not_filled", "window ended unfilled")
+        elif intent["side"] == "buy" and not self._sellable_now(ticker):
+            # AD-28: an unsellable partial buy keeps re-pricing toward the sellable
+            # threshold until completion_end_at.
+            with self.store.transaction():
+                self.store.update(
+                    "intents",
+                    "intent_id",
+                    intent_id,
+                    state="completing",
+                    completion_end_at=iso(
+                        parse_iso(intent["window_end_at"]) + self.cfg.completion_window
+                    ),
+                    updated_at=iso(now),
+                )
         else:
-            self._finish(intent["intent_id"], now, "done", "partially_filled", "window ended")
+            self._finish(intent_id, now, "done", "partially_filled", "window ended")
+
+    def _end_completion(self, intent, now: datetime, ticker: Ticker) -> None:  # noqa: ANN001
+        intent_id = intent["intent_id"]
+        self._cancel_live(intent, now)
+        if self._live_order(intent_id) is not None:
+            return
+        if self._sellable_now(ticker):
+            self._finish(intent_id, now, "done", "partially_filled", "completion reached")
+            return
+        position = self.store.position(self.cfg.pair)
+        reason = f"completion window ended with unsellable position {position}"
+        with self.store.transaction():
+            self._risk_event(now, "dust", "minimums", intent_id, reason, {})
+            self.store.insert(
+                "errors", at=iso(now), component="engine", error_type="Dust", message=reason
+            )
+            self._finish(intent_id, now, "done", "dust", reason)

@@ -82,16 +82,24 @@ def _window_return(run: RunResult) -> dict[str, Any]:
 def execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict[str, Any]]:
     """Run the backtest and write its results; raises ``BacktestRefused`` on a rule."""
     _check_range(settings, req)
-    strategy = build(req.strategy_id, settings.strategy.params, "backtest")
+    try:
+        strategy = build(req.strategy_id, settings.strategy.params, "backtest")
+    except ValueError as exc:
+        raise BacktestRefused(f"invalid strategy parameters: {exc}") from exc
     if not getattr(strategy, "implemented", True):
         raise NotImplementedError(f"strategy {req.strategy_id} is not implemented yet")
     timeframes = (strategy.timeframe, settings.execution.sim_timeframe)
-    ds = dataset_mod.load_dataset(settings, req.start, req.end, timeframes)
+    try:
+        ds = dataset_mod.load_dataset(settings, req.start, req.end, timeframes)
+    except dataset_mod.HoldoutViolation as exc:
+        raise BacktestRefused(str(exc)) from exc
     maker = run_backtest(settings, ds, "maker", strategy_id=req.strategy_id)
     # AD-4: raises LookAheadError before anything is written.
     guard = check_prefix_invariance(
         settings, req.start, req.end, timeframes, maker, strategy_id=req.strategy_id
     )
+    # CON-06 report variant: same signals, filled at once at the aggressive side, taker fee.
+    taker = run_backtest(settings, ds, "taker", strategy_id=req.strategy_id)
     commit = git_commit()
     payload: dict[str, Any] = {
         "label": "SIMULATED",
@@ -121,7 +129,8 @@ def execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict[
             "seed": guard.seed,
         },
         "maker": _window_return(maker),
-        "halted": maker.halted,
+        "taker": _window_return(taker),
+        "halted": {"maker": maker.halted, "taker": taker.halted},
     }
     s = payload["maker"]
     first = (

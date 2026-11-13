@@ -125,7 +125,10 @@ def _random_walk_after(
     """Replace rows with ``open_at >= cut`` by a seeded random walk from the last close.
 
     ``mirror`` negates the walk's returns: the same seed gives a future and its mirror
-    image, so any future-dependent decision differs from the baseline in at least one.
+    image, so a decision that depends on the DIRECTION of the future differs from the
+    baseline in at least one of them. Each timeframe gets its own walk (1d is not the
+    aggregate of 15m): fine for the guard, whose reruns stop before any fill on replaced
+    data; do not use ``replace_after`` for anything that needs consistent futures.
     The walk carries a drift of one sigma per candle (up, or down when mirrored) so the
     replaced future clearly differs in direction from any real one."""
     out = frame.copy()
