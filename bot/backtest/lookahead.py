@@ -60,6 +60,7 @@ def check_prefix_invariance(
     params: dict[str, int] | None = None,
     n_cutpoints: int | None = None,
     seed: int | None = None,
+    allow_holdout: bool = False,
 ) -> LookAheadReport:
     n = settings.backtest.lookahead_cutpoints if n_cutpoints is None else n_cutpoints
     seed = settings.backtest.lookahead_seed if seed is None else seed
@@ -88,6 +89,7 @@ def check_prefix_invariance(
                 replace_after=cut,
                 seed=seed + i + 1,
                 mirror=mirror,
+                allow_holdout=allow_holdout,
             )
             rerun = run_backtest(
                 settings,

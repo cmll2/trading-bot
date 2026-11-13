@@ -174,3 +174,27 @@ def test_same_inputs_give_the_same_file_content(tmp_path) -> None:
     j2, m2, _ = _execute(env, tmp_path / "r2")
     assert j1.read_bytes() == j2.read_bytes()
     assert m1.read_bytes() == m2.read_bytes()
+
+
+def test_verdict_names_both_rates_when_both_fail_and_annualized_never_overflows() -> None:
+    from bot.backtest.metrics import annualized
+
+    v = verdict("v0_trend", _block(0.5, 1.0), _block(0.4, 0.9))
+    assert "(at both maker and taker fees)" in v["line"]
+    assert annualized(10.0, 1) == math.inf
+
+
+def test_time_in_market_ignores_dust_below_the_exchange_minimum() -> None:
+    run = _run(["20", "20", "20", "20"], ["1", "1", "1", "1"], ["0.001", "0.00001", "0", "0"])
+    run.rules_snapshot = {"amount_min": "0.00006"}
+    assert strategy_metrics(run, 100, 1, 0).time_in_market == 0.25
+
+
+def test_anomaly_flag_covers_fills_on_the_day_after_the_bad_candle() -> None:
+    from bot.backtest.report import anomaly_block
+
+    fills = [{"at": "2018-01-14T00:30:00.000Z", "side": "buy", "qty": "1", "price": "1",
+              "fee": "0"}]  # fmt: skip
+    run = _run(["20", "20"], ["1", "1"], ["0", "0"], fills)
+    out = anomaly_block([{"date": "2018-01-13", "note": "x"}], {"maker": run})
+    assert out[0]["flag"] == "FILL SIMULATED ON THIS DAY" and out[0]["fills_on_day"]["maker"] == 1

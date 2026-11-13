@@ -53,7 +53,7 @@ class Metrics:
 
     def as_dict(self) -> dict[str, object]:
         d = asdict(self)
-        d["sharpe_ci_95"] = list(self.sharpe_ci_95)
+        d["sharpe_ci_95"] = [round(v, 10) for v in self.sharpe_ci_95]
         return {k: (round(v, 10) if isinstance(v, float) else v) for k, v in d.items()}
 
 
@@ -78,7 +78,10 @@ def max_drawdown(equity: np.ndarray) -> float:
 def annualized(total: float, days: int) -> float:
     if days <= 0 or total <= -1:
         return -1.0 if total <= -1 else 0.0
-    return (1 + total) ** (365 / days) - 1
+    try:
+        return (1 + total) ** (365 / days) - 1
+    except OverflowError:
+        return math.inf
 
 
 def bootstrap_sharpe_ci(
@@ -145,8 +148,10 @@ def window(run: RunResult) -> list[tuple[datetime, Decimal, Decimal, Decimal]]:
 
 def strategy_metrics(run: RunResult, resamples: int, block: int, seed: int) -> Metrics:
     pts = window(run)
-    t0 = pts[0][0]
-    fills = [f for f in run.fills if parse_iso(str(f["at"])) >= t0]
+    t0, t1 = pts[0][0], pts[-1][0]
+    # Only fills inside the window whose effect the equity points include.
+    fills = [f for f in run.fills if t0 <= parse_iso(str(f["at"])) <= t1]
+    amount_min = Decimal(str(run.rules_snapshot.get("amount_min", "0")))
     sides = [f["side"] for f in fills]
     round_trips = sum(
         1 for a, b in zip(sides, sides[1:], strict=False) if (a, b) == ("buy", "sell")
@@ -158,7 +163,8 @@ def strategy_metrics(run: RunResult, resamples: int, block: int, seed: int) -> M
         round_trips=round_trips,
         notional=sum(float(Decimal(f["qty"]) * Decimal(f["price"])) for f in fills),
         fees=sum(float(Decimal(f["fee"])) for f in fills),
-        in_market=np.array([p[3] > 0 for p in pts]),
+        # Dust below the exchange minimum is not a position (AD-13).
+        in_market=np.array([p[3] > 0 and p[3] >= amount_min for p in pts]),
         resamples=resamples,
         block=block,
         seed=seed,
@@ -166,13 +172,20 @@ def strategy_metrics(run: RunResult, resamples: int, block: int, seed: int) -> M
 
 
 def buy_and_hold_metrics(
-    run: RunResult, fee: Decimal, slippage_bps: Decimal, resamples: int, block: int, seed: int
+    run: RunResult,
+    fee: Decimal,
+    slippage_bps: Decimal,
+    resamples: int,
+    block: int,
+    seed: int,
+    half_spread_bps: Decimal = Decimal(0),
 ) -> Metrics:
-    """All of the first point's equity buys at that point's mark x (1 + slippage), paying
-    ``fee``; the position is then marked at each later point's mark."""
+    """All of the first point's equity buys at that point's mark x (1 + half spread) x
+    (1 + slippage), paying ``fee`` (the taker variant passes the half spread, as its
+    strategy pays it); the position is then marked at each later point's mark."""
     pts = window(run)
     e0, m0 = pts[0][1], pts[0][2]
-    price = m0 * (1 + slippage_bps * BPS)
+    price = m0 * (1 + half_spread_bps * BPS) * (1 + slippage_bps * BPS)
     qty = e0 / (price * (1 + fee))
     fee_paid = qty * price * fee
     equity = np.array([float(e0)] + [float(qty * p[2]) for p in pts[1:]])

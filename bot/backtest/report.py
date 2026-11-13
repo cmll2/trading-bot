@@ -2,13 +2,14 @@
 
 Line 1 of the report is the verdict against buy-and-hold AFTER COSTS, at both fee rates
 (FR-19): the strategy "beats" buy-and-hold only if its total return is higher at the
-maker AND at the taker rate. Line 2 labels the whole report SIMULATED and states that a
+maker AND at the taker rate. Line 3 labels the whole report SIMULATED and states that a
 backtest is not evidence of future profit (WR-05, NFR-09).
 """
 
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date, timedelta
 from typing import Any
 
 from bot.backtest.metrics import Metrics
@@ -55,7 +56,7 @@ def verdict(strategy_id: str, maker: dict[str, Any], taker: dict[str, Any]) -> d
         )
     else:
         where = (
-            "at maker or taker fees"
+            "at both maker and taker fees"
             if not beats_maker and not beats_taker
             else ("at maker fees" if not beats_maker else "at taker fees")
         )
@@ -72,12 +73,14 @@ def verdict(strategy_id: str, maker: dict[str, Any], taker: dict[str, Any]) -> d
 
 
 def anomaly_block(anomalies: list[dict[str, str]], runs: dict[str, RunResult]) -> list[dict]:
-    """Known data anomalies in range, with any simulated fill on that day flagged (F-3)."""
+    """Known data anomalies in range, with any simulated fill on that day or the next
+    flagged (F-3): a daily signal reads a candle at its close, so orders driven by the bad
+    print fill on the following day."""
     out = []
     for a in anomalies:
-        fills = {
-            v: [f for f in r.fills if str(f["at"]).startswith(a["date"])] for v, r in runs.items()
-        }
+        day = date.fromisoformat(a["date"])
+        days = (day.isoformat(), (day + timedelta(days=1)).isoformat())
+        fills = {v: [f for f in r.fills if str(f["at"])[:10] in days] for v, r in runs.items()}
         out.append(
             {
                 **a,
@@ -120,6 +123,8 @@ def _table(block: dict[str, Any]) -> list[str]:
 
 def render_markdown(p: dict[str, Any]) -> str:
     lines = [p["verdict"]["line"], "", SIMULATED_LINE, ""]
+    if p["holdout"].get("banner"):
+        lines += [f"**{p['holdout']['banner']}**", ""]
     lines += [
         f"# Backtest report: {p['strategy']} (change {p['change']})",
         "",
@@ -132,10 +137,11 @@ def render_markdown(p: dict[str, Any]) -> str:
         f"- Data: {p['data']['pair']} {p['data']['start'][:10]} to "
         f"{p['data']['end_exclusive'][:10]} (exclusive); hashes "
         + ", ".join(f"{tf} `{h[:16]}`" for tf, h in sorted(p["data"]["hashes"].items())),
-        f"- Evaluation window (after the {p['params']} warm-up): "
+        f"- Evaluation window (after a {p['warmup_candles']}-candle warm-up): "
         f"{p['results']['maker']['strategy']['start'][:10]} to "
         f"{p['results']['maker']['strategy']['end'][:10]}",
-        f"- Holdout {p['holdout']['start']}..{p['holdout']['end']}: {p['holdout']['status']}",
+        f"- Holdout {p['holdout']['start']}..{p['holdout']['end']}: {p['holdout']['status']}"
+        f"; holdout runs recorded for this strategy: {p['holdout']['runs_recorded']}",
         f"- Fees: maker {p['fees']['maker']}, taker {p['fees']['taker']} "
         f"({p['fees']['source']}); slippage {p['slippage_bps']} bp",
         f"- Exchange rules: public market snapshot fetched {p['market_rules']['fetched_at']} "

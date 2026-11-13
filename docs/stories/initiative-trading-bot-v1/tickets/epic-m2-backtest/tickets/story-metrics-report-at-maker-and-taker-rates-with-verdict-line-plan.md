@@ -3,7 +3,7 @@ title: 'Metrics report at maker and taker rates with verdict line'
 type: feature
 ticket: '8'
 created: '2026-11-13'
-status: in-review
+status: built
 baseline_revision: 'fa4f3f8'
 route: full
 route_source: auto
@@ -12,7 +12,7 @@ review: quick
 review_source: pinned
 lenses_ran: [quick]
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: []
 warnings: []
 deferred: []
@@ -62,6 +62,27 @@ Implemented in the coordinator's main session. Bootstrap method: circular moving
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-11-13 — Review pass
+- verdicts: 11 findings — high 0, medium 3, low 8, false 0, maybe-false 0
+- findings:
+  - `[medium]` `[patch]` dust counted as time in market — in-market requires base >= amount_min; test.
+  - `[medium]` `[patch]` fills after the last equity point counted in trades/fees/turnover — fills limited to the window.
+  - `[medium]` `[patch]` taker buy-and-hold omitted the half spread the taker strategy pays — taker B&H pays it too; caveat says so.
+  - `[low]` `[patch]` "at maker or taker fees" wording when both fail — "at both maker and taker fees"; test.
+  - `[low]` `[patch]` caveats hardcoded config values — built from settings.
+  - `[low]` `[patch]` completion phase and settle timeout missing from caveats/provenance — added.
+  - `[low]` `[patch]` docstring said SIMULATED on line 2 — line 3.
+  - `[low]` `[patch]` evaluation-window line printed the params dict — prints the warm-up candle count.
+  - `[low]` `[patch]` anomaly flag checked the wrong day — flags fills on the anomaly day and the next day; test.
+  - `[low]` `[patch]` annualized overflow could crash — returns inf; test.
+  - `[low]` `[patch]` CI bounds not rounded — rounded.
+
+## Auto Run Result
+
+- Summary: all FR-14 metrics for strategy/buy-and-hold/cash at maker and taker rates, bootstrap Sharpe CI, verdict line 1, SIMULATED label, provenance, deterministic content.
+- Review: 11 patches. Follow-up review recommended: true by formula (3 medium) — named risk: benchmark cost model (half spread, no exit cost) is a modelling choice the audit should confirm.
+- Verification: full check at commit.
 
 ## Verification
 

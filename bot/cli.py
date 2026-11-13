@@ -144,6 +144,24 @@ def _parser() -> argparse.ArgumentParser:
             p.add_argument(
                 "--results-dir", type=Path, default=None, help="default: backtest.results_dir"
             )
+            p.add_argument(
+                "--change",
+                type=int,
+                default=0,
+                help="strategy change number (0 = baseline; 1..5 need a changes.md entry)",
+            )
+            p.add_argument(
+                "--holdout",
+                action="store_true",
+                help="the ONE-SHOT holdout run (recorded in results/holdout_runs.jsonl; clean "
+                "tree required). Irreversible: decide before running.",
+            )
+            p.add_argument(
+                "--rerun-holdout",
+                action="store_true",
+                help="allow a second holdout run (needs --reason; banners later reports)",
+            )
+            p.add_argument("--reason", default=None, help="reason for --rerun-holdout")
         if name == "live":
             p.add_argument("--live", action="store_true", help="required to run live")
 
@@ -409,11 +427,23 @@ def _import_archive_command(
 def _backtest_command(args: argparse.Namespace, settings: Settings, strategy_id: str) -> int:
     """``bot backtest`` (M2): results file + report; the holdout is excluded by default."""
     req = backtest_command.default_request(settings, strategy_id, _clock_factory().now().date())
+    if args.rerun_holdout and not args.holdout:
+        _err("REFUSED: --rerun-holdout only makes sense with --holdout")
+        return EXIT_REFUSED
+    if args.rerun_holdout and not (args.reason or "").strip():
+        _err("REFUSED: --rerun-holdout needs --reason")
+        return EXIT_REFUSED
+    if args.holdout and (args.start or args.end):
+        _err("REFUSED: the holdout run uses the fixed holdout window; no --start/--end")
+        return EXIT_REFUSED
     req = replace(
         req,
         start=args.start or req.start,
         end=args.end or req.end,
         results_dir=args.results_dir or req.results_dir,
+        change=args.change,
+        holdout=args.holdout,
+        rerun_reason=args.reason if args.rerun_holdout else None,
     )
     try:
         json_path, md_path, _ = backtest_command.execute(settings, req)
