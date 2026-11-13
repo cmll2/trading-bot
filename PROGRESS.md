@@ -154,6 +154,8 @@ Read this first in every session. Source of truth for the brief: `first_brief.tx
 | 2026-11-13 | Every report carries a no-€25-cap DIAGNOSTIC section (separate in-memory limits, backtest command only), not a configuration tried | Audit M2 F-4 (coordinator) |
 | 2026-11-13 | Every real backtest run is committed under `results/` and listed in PROGRESS.md (3 so far) | Audit M2 F-7: the run count must stay honest |
 
+| 2026-11-13 | **Operator M2 review:** fees = Kraken published entry tier (0.40%/0.80%) in config, verified against fetch_trading_fee at live startup (refuse if API higher); daily-loss halt stays 10% (manual reset via CLI; backtest models reset at next daily close); completion phase = new linked intent approved; **v0 holdout run now, v0 frozen** (later ideas are new strategies); M2 merged, M3 started | Operator answers at M2 review |
+
 ## Brief corrections (from research)
 
 - Kraken minimums are lower than brief states (live: 0.00006 BTC, 0.002 ETH, €0.45 cost min) — always read from metadata.
