@@ -1,4 +1,4 @@
-"""Broker port (FR-23, architecture §1). Signatures only in M0.
+"""Broker port (FR-23, architecture §1).
 
 Money and quantities are ``Decimal``; datetimes are timezone-aware UTC. ``place_order``
 takes the ``RiskDecision`` and every adapter must refuse unless ``decision.approved`` and
@@ -107,6 +107,30 @@ class KeyPermissions:
     applicable: bool
     permissions: frozenset[str]
     ip_allowlist: tuple[str, ...]
+
+
+class RiskGateViolation(Exception):
+    """``place_order`` was called without an approved, matching ``RiskDecision`` (AD-10).
+
+    Not part of the broker error taxonomy on purpose: it is a programming error in the
+    caller, never an exchange outcome, and nothing has been sent when it is raised.
+    """
+
+
+def require_approved(req: OrderRequest, decision: RiskDecision | None) -> None:
+    """The first call of every adapter's ``place_order`` (AD-10).
+
+    Raises ``RiskGateViolation`` unless ``decision`` is a ``RiskDecision`` that is approved
+    and carries the request's ``cl_ord_id``.
+    """
+    if not isinstance(decision, RiskDecision):
+        raise RiskGateViolation(f"order {req.cl_ord_id}: no RiskDecision supplied")
+    if not decision.approved:
+        raise RiskGateViolation(
+            f"order {req.cl_ord_id}: risk decision is a rejection ({decision.rule})"
+        )
+    if decision.cl_ord_id != req.cl_ord_id:
+        raise RiskGateViolation(f"order {req.cl_ord_id}: risk decision is for {decision.cl_ord_id}")
 
 
 class Broker(Protocol):
