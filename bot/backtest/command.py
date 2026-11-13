@@ -85,7 +85,9 @@ def caveats(settings: Settings, holdout_run: bool = False) -> list[str]:
         f"that amount while buy-and-hold keeps its whole initial stake invested (it buys "
         f"once and holds). The DIAGNOSTIC section shows the same strategy without that cap.",
         "Exchange minimums and precision come from one public market snapshot and are "
-        "applied to the whole history; historical minimums differed.",
+        "applied to the whole history; historical minimums differed (Kraken's BTC minimum "
+        "was about 0.002 BTC in earlier years, which would have mattered at EUR 20), and the "
+        "simulated half spread is optimistic for 2017-2018, when BTC/EUR spreads were wider.",
         f"Fees are Kraken's published entry tier (maker {settings.fees.maker}, taker "
         f"{settings.fees.taker}), not the account's tier (verified against fetch_trading_fee "
         f"at live start, M6).",
