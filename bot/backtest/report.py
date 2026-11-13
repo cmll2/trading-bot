@@ -36,6 +36,36 @@ def variant_block(
         ),
         "halted": run.halted,
         "halt_reason": run.halt_reason,
+        "halts": halt_block(run),
+    }
+
+
+def halt_block(run: RunResult) -> dict[str, Any]:
+    """Protected halts (daily loss, total drawdown) and their SIMULATED RESETS (F-1)."""
+    events = [
+        {
+            "rule": e["rule"],
+            "triggered_at": e["triggered_at"],
+            "reset_at": e["reset_at"],
+            "simulated_reset": bool(e["reset_note"])
+            and str(e["reset_note"]).startswith("SIMULATED RESET"),
+            "baseline_rebased": bool(e["rebase_baseline"]),
+            "reason": e["reason"],
+        }
+        for e in run.halt_events
+    ]
+    halted_intents = sum(1 for s in run.signals if s["outcome"] == "halted")
+    return {
+        "count_by_rule": dict(sorted(Counter(e["rule"] for e in events).items())),
+        "events": events,
+        "intents_halted": halted_intents,
+        "effect": (
+            f"{len(events)} halt(s); {halted_intents} working intent(s) halted (resting "
+            "orders cancelled, position kept); no order could be placed until the SIMULATED "
+            "RESET at the next UTC daily close"
+            if events
+            else "no halt"
+        ),
     }
 
 
@@ -167,6 +197,20 @@ def render_markdown(p: dict[str, Any]) -> str:
             f"- Halted: {b['halted']}" + (f" ({b['halt_reason']})" if b["halt_reason"] else ""),
             "",
         ]
+    lines += [
+        "## Protected halts and SIMULATED RESETS",
+        "",
+        f"Policy: {p['halt_policy']}",
+        "",
+    ]
+    for variant in ("maker", "taker"):
+        h = p["results"][variant]["halts"]
+        days = ", ".join(e["triggered_at"][:16].replace("T", " ") for e in h["events"])
+        lines += [
+            f"- {variant}: {h['count_by_rule'] or 'no halt'}; {h['effect']}.",
+            f"  - Triggered (UTC): {days or 'none'}",
+        ]
+    lines.append("")
     if p.get("walk_forward"):
         lines += ["## Walk-forward folds (out-of-sample, pre-holdout, maker fees)", ""]
         lines += [

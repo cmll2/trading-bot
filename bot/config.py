@@ -99,6 +99,8 @@ class BacktestSettings(_Frozen):
     bootstrap_block_days: int = Field(gt=0)
     bootstrap_seed: int
     walk_forward_fold_days: int = Field(ge=30)  # FR-15
+    # Audit M2 F-1: what the backtest does after a protected halt.
+    simulated_halt_reset: Literal["next_daily_close", "end_run"]
 
     @model_validator(mode="after")
     def _ordered(self) -> BacktestSettings:

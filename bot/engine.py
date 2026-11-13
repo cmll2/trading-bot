@@ -297,6 +297,47 @@ class Engine:
                 if cur.rowcount:
                     self._risk_event(now, "halt", trigger.rule, None, trigger.reason, {})
 
+    def reset_halts(self, now: datetime, note: str, rebase_rules: tuple[str, ...]) -> list[str]:
+        """Apply a halt reset (AD-12): the operator's ``bot reset-halt`` in dry-run/live
+        (M3 consumes it from ``operator_actions``), or the backtest's SIMULATED RESET.
+
+        Writes one consumed ``operator_actions`` row, closes every active halt, writes a
+        ``halt_reset`` risk event, and, when an active halt's rule is in ``rebase_rules``,
+        appends a new drawdown baseline at the current equity (Q-6 ``--rebase-baseline``).
+        Returns the rules reset."""
+        rows = self.store.all("SELECT halt_id, rule FROM halts WHERE reset_at IS NULL")
+        if not rows:
+            return []
+        rules = [r["rule"] for r in rows]
+        rebase = any(r in rebase_rules for r in rules)
+        ticker = self.broker.get_ticker(self.cfg.pair)
+        mid = (ticker.bid + ticker.ask) / 2
+        with self.store.transaction():
+            action = self.store.insert(
+                "operator_actions",
+                at=iso(now),
+                kind="reset_halt",
+                target_id=",".join(rules),
+                note=note,
+                rebase_baseline=int(rebase),
+                consumed_at=iso(now),
+                result="applied",
+            )
+            for r in rows:
+                self.store.update(
+                    "halts", "halt_id", r["halt_id"], reset_at=iso(now), reset_action_id=action
+                )
+            self._risk_event(now, "halt_reset", ",".join(rules), None, note, {"rebase": rebase})
+            if rebase:
+                self.store.insert(
+                    "equity_baselines",
+                    at=iso(now),
+                    equity=dec(self.store.equity_at(now, mid, self.cfg.pair)),
+                    reason=note,
+                    action_id=action,
+                )
+        return rules
+
     def _active_halts(self) -> tuple[str, ...]:
         rows = self.store.all("SELECT rule FROM halts WHERE reset_at IS NULL ORDER BY halt_id")
         return tuple(r["rule"] for r in rows)

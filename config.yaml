@@ -62,6 +62,10 @@ backtest:
   bootstrap_block_days: 20
   bootstrap_seed: 20261113
   walk_forward_fold_days: 365       # consecutive out-of-sample folds before the holdout
+  # After a protected halt (daily loss / total drawdown) the backtest models the operator's
+  # manual reset at the next UTC daily close (SIMULATED RESET, labelled in every report);
+  # a total-drawdown reset also rebases the baseline. "end_run" stops the run at a halt.
+  simulated_halt_reset: next_daily_close
 
 review:
   # GL-02 tolerances.

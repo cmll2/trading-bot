@@ -269,6 +269,14 @@ def execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict[
             "seed": guard.seed,
         },
         "results": {"maker": maker_block, "taker": taker_block},
+        "halt_policy": (
+            "protected halts are evaluated on equity marked at every 15m close; after a halt "
+            "the resting orders are cancelled and the position kept, and the operator's "
+            "manual reset is modelled as a SIMULATED RESET at the next UTC daily close (a "
+            "total-drawdown reset also rebases the baseline)"
+            if settings.backtest.simulated_halt_reset == "next_daily_close"
+            else "the run ends at the first protected halt"
+        ),
         "data_anomalies": anomaly_block(anomalies_in(ds), {"maker": maker, "taker": taker}),
         "caveats": caveats(settings, req.holdout),
     }
