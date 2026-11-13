@@ -187,6 +187,8 @@ CREATE TABLE intents (                      -- one order decision; at most one p
   intent_id INTEGER PRIMARY KEY,
   signal_id TEXT UNIQUE REFERENCES signals,
   source_action_id INTEGER UNIQUE REFERENCES operator_actions,   -- set for flatten
+  -- schema v2 (migration 0002, audit M2 F-3): parent_intent_id INTEGER UNIQUE REFERENCES intents,
+  --   set for a completion intent (signal_id NULL, side 'buy'); CHECK extended accordingly
   is_flatten INTEGER NOT NULL DEFAULT 0,
   pair TEXT NOT NULL, side TEXT NOT NULL CHECK (side IN ('buy','sell')),
   reference_price TEXT NOT NULL,            -- signal close, or mid when flatten created (price-sanity base)
@@ -779,15 +781,15 @@ stateDiagram-v2
 | awaiting_approval → cancelled | reject | `skipped_by_operator` |
 | awaiting_approval → expired | deadline passed | `skipped_by_operator` |
 | working → done | filled_qty = target (or the sell cleared the position) | `filled` |
-| working → completing | buy at window end with 0 < filled < sellable threshold | none yet |
+| working → done + NEW completion intent | buy at window end (or an unsizable re-price) with 0 < filled < sellable threshold | `partially_filled` |
 | working → done | window end, filled = 0 | `not_filled` |
 | working → done | window end, sellable partial fill | `partially_filled` |
 | working → cancelled | non-cross `OrderRejected`, or a later risk rejection | `partially_filled` if filled > 0, else `rejected_by_risk` |
-| completing → done | sellable threshold reached | `partially_filled` |
-| completing → done | `completion_end_at` passed, still unsellable | `dust` (+ `dust` risk event, logged as an error) |
+| completion intent → done | sellable threshold reached | parent's signal stays `partially_filled` |
+| completion intent → done / cancelled | its window passed, or any risk/exchange rejection, still unsellable | parent's signal → `dust` (+ `dust` risk event, logged as an error) |
 | any active → halted | kill switch or halt (non-flatten) | `halted` |
 
-  **Completion phase:** the intent keeps re-pricing post-only toward the sellable threshold only, until `completion_end_at = window_end_at + execution.completion_window` (default 24 h). It goes through every risk check, does not count toward orders/day, and its submissions are capped by `execution.max_submissions_per_intent` and by the daily `risk.max_exchange_submissions_per_day`.
+  **Completion phase (amended 2026-11-13 after audit M2 F-3):** the parent intent ends `done` and a NEW completion intent is created, linked by `intents.parent_intent_id` (no signal of its own; the journal reports on the parent's signal). It is an ordinary intent under the normal rules: it counts against the protected `risk.max_order_intents_per_day`, has its own `risk.max_submissions_per_intent` budget, passes every risk check (a rejection ends it), buys post-only only up to the sellable threshold, and its window ends at the parent's `window_end_at + execution.completion_window` (default 24 h). If it ends with the position still unsellable, the parent's signal outcome becomes `dust`. *(Supersedes the M2 build's per-phase submission count, which reinterpreted a protected limit.)*
 
 ### AD-29: Operational envelope
 

@@ -21,7 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
 
@@ -127,35 +127,48 @@ class Store:
         # The version is read inside the write transaction, so two processes opening a new
         # file cannot both apply a migration.
         for number, path in _migrations():
-            with self.transaction():
-                if self._has_table("schema_meta"):
-                    current = self._version()
-                else:
-                    others = self._conn.execute(
-                        "SELECT count(*) FROM sqlite_master WHERE type='table'"
-                    ).fetchone()[0]
-                    if others:
-                        raise StoreError("existing database is not a trading-bot store")
-                    current = 0
-                if current > SCHEMA_VERSION:
-                    raise StoreError(
-                        f"store schema_version {current} is newer than code {SCHEMA_VERSION}"
-                    )
-                if number <= current or number > SCHEMA_VERSION:
-                    continue
-                for statement in _statements(path.read_text(encoding="utf-8")):
-                    self._conn.execute(statement)
-                if current == 0:
-                    self._conn.execute(
-                        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?)",
-                        (str(number),),
-                    )
-                else:
-                    self._conn.execute(
-                        "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
-                        (str(number),),
-                    )
+            # Table rebuilds need foreign keys off; the pragma only works outside a
+            # transaction. Integrity is re-checked in full before COMMIT.
+            self._conn.execute("PRAGMA foreign_keys=OFF")
+            try:
+                self._migrate_one(number, path)
+            finally:
+                self._conn.execute("PRAGMA foreign_keys=ON")
         self._check_version()
+
+    def _migrate_one(self, number: int, path: Path) -> None:
+        """Apply migration ``number`` if the store is older, in one transaction."""
+        with self.transaction():
+            if self._has_table("schema_meta"):
+                current = self._version()
+            else:
+                others = self._conn.execute(
+                    "SELECT count(*) FROM sqlite_master WHERE type='table'"
+                ).fetchone()[0]
+                if others:
+                    raise StoreError("existing database is not a trading-bot store")
+                current = 0
+            if current > SCHEMA_VERSION:
+                raise StoreError(
+                    f"store schema_version {current} is newer than code {SCHEMA_VERSION}"
+                )
+            if number <= current or number > SCHEMA_VERSION:
+                return
+            for statement in _statements(path.read_text(encoding="utf-8")):
+                self._conn.execute(statement)
+            if current == 0:
+                self._conn.execute(
+                    "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?)",
+                    (str(number),),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+                    (str(number),),
+                )
+            bad = self._conn.execute("PRAGMA foreign_key_check").fetchall()
+            if bad:
+                raise StoreError(f"migration {number} breaks foreign keys: {bad[:3]}")
 
     # --- low-level --------------------------------------------------------------------
 

@@ -92,13 +92,13 @@ def test_pragmas_on_a_file_store(tmp_path: Path) -> None:
     s.close()
     # Reopening an existing store does not re-apply the migration.
     s2 = Store.open(tmp_path / "x.sqlite")
-    assert s2.get_meta("schema_version") == "1"
+    assert s2.get_meta("schema_version") == str(SCHEMA_VERSION)
     s2.close()
 
 
 def test_version_mismatch_refuses_to_open(tmp_path: Path, monkeypatch) -> None:
     Store.open(tmp_path / "x.sqlite").close()
-    monkeypatch.setattr(store_mod, "SCHEMA_VERSION", 2)
+    monkeypatch.setattr(store_mod, "SCHEMA_VERSION", SCHEMA_VERSION + 1)
     with pytest.raises(StoreError, match="schema_version"):
         Store.open_readonly(tmp_path / "x.sqlite")
 
@@ -264,7 +264,7 @@ def test_fill_side_must_be_buy_or_sell(st: Store) -> None:
 
 def test_read_write_open_refuses_an_older_store(tmp_path: Path, monkeypatch) -> None:
     Store.open(tmp_path / "x.sqlite").close()
-    monkeypatch.setattr(store_mod, "SCHEMA_VERSION", 2)
+    monkeypatch.setattr(store_mod, "SCHEMA_VERSION", SCHEMA_VERSION + 1)
     with pytest.raises(StoreError, match="schema_version"):
         Store.open(tmp_path / "x.sqlite")
 
@@ -299,3 +299,39 @@ def test_failed_commit_leaves_no_dangling_transaction(st: Store) -> None:
     with st.transaction():
         st.insert("halts", rule="daily_loss", triggered_at=iso(T0), reason="r")
     assert len(st.all("SELECT * FROM halts")) == 1
+
+
+def test_v1_store_migrates_to_v2_keeping_intents(tmp_path: Path) -> None:
+    """Audit M2 F-3: schema v2 rebuilds intents with parent_intent_id; v1 rows survive."""
+    path = tmp_path / "v1.sqlite"
+    v1_only = [(1, store_mod.MIGRATIONS_DIR / "0001_init.sql")]
+    with pytest.MonkeyPatch.context() as mp:  # build a v1 store, then open it with v2 code
+        mp.setattr(store_mod, "SCHEMA_VERSION", 1)
+        mp.setattr(store_mod, "_migrations", lambda: v1_only)
+        s1 = Store.open(path)
+        s1.init_account(initial_quote=Decimal("20"), initial_base=Decimal("0"), at=T0)
+        intent = _intent(s1, _signal(s1, _run(s1)), state="done")
+        _order(s1, intent, "c1", state="filled")
+        assert s1.get_meta("schema_version") == "1"
+        s1.close()
+    s2 = Store.open(path)
+    assert s2.get_meta("schema_version") == str(SCHEMA_VERSION)
+    assert s2.one("SELECT parent_intent_id FROM intents WHERE intent_id = ?", (intent,))[0] is None
+    assert s2.one("SELECT count(*) FROM orders")[0] == 1
+    assert s2.all("PRAGMA foreign_key_check") == []
+
+
+def test_completion_intent_links_to_its_parent_without_a_signal(st: Store) -> None:
+    parent = _intent(st, _signal(st, _run(st)), state="done")
+    child = st.insert(
+        "intents", parent_intent_id=parent, pair="BTC/EUR", side="buy", reference_price="1",
+        target_qty="0.00006", state="working", approval_mode="autonomous",
+        window_end_at=iso(T0), created_at=iso(T0), updated_at=iso(T0),
+    )  # fmt: skip
+    assert st.one("SELECT parent_intent_id FROM intents WHERE intent_id = ?", (child,))[0] == parent
+    with pytest.raises(sqlite3.IntegrityError):  # a completion intent never sells
+        st.insert(
+            "intents", parent_intent_id=child, pair="BTC/EUR", side="sell", reference_price="1",
+            target_qty="1", state="done", approval_mode="autonomous", window_end_at=iso(T0),
+            created_at=iso(T0), updated_at=iso(T0),
+        )  # fmt: skip

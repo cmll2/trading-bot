@@ -159,7 +159,7 @@ def test_taker_variant_fills_at_the_ask_with_the_taker_fee(tmp_path) -> None:
 
 
 class Harness:
-    def __init__(self, tmp_path) -> None:  # noqa: ANN001
+    def __init__(self, tmp_path, limits=None) -> None:  # noqa: ANN001
         env = make_env(tmp_path, CLOSES, sma_days=2, wiggle=0.0)
         self.settings = env.settings
         ds = load_dataset(env.settings, env.start, end_date(env, len(CLOSES)), ("1d", "15m"))
@@ -184,7 +184,7 @@ class Harness:
             md,
             self.store,
             build("v0_trend", {"sma_days": 2}, "backtest"),
-            env.settings.risk,
+            limits or env.settings.risk,
             backtest_engine_config(env.settings, "BTC/EUR", "1d", "EUR", "maker"),
         )
         self.engine.start()
@@ -202,17 +202,29 @@ class Harness:
     def intent_state(self) -> str:
         return self.store.one("SELECT state FROM intents ORDER BY intent_id DESC")[0]
 
+    def completion(self):  # noqa: ANN201
+        """The completion intent (audit M2 F-3: a NEW intent linked to its parent)."""
+        return self.store.one("SELECT * FROM intents WHERE parent_intent_id IS NOT NULL")
+
 
 def test_unsellable_partial_buy_enters_completion_and_reaches_the_threshold(tmp_path) -> None:
     h = Harness(tmp_path)
     h.tick()
     first = h.broker.placed[0]
     h.broker.fill(first.cl_ord_id, Decimal("0.00005"))  # below amount_min 0.00006
-    h.tick(timedelta(hours=6))  # window end
-    assert h.intent_state() == "completing"
-    h.tick(T15)  # completion order: smallest valid buy reaching the sellable threshold
+    h.tick(timedelta(hours=6))  # window end: parent done, completion intent opened
+    parent_state = h.store.one("SELECT state FROM intents WHERE intent_id = 1")[0]
+    assert parent_state == "done" and h.outcome() == "partially_filled"
+    child = h.completion()
+    assert child["parent_intent_id"] == 1 and child["signal_id"] is None
+    assert child["state"] == "working" and child["side"] == "buy"
+    # Its first order (attempt 1 of its OWN budget): smallest valid buy to the threshold.
     completion = h.broker.placed[-1]
     assert completion.qty == Decimal("0.00006")
+    attempts = h.store.all(
+        "SELECT attempt_no FROM orders WHERE intent_id = ?", (child["intent_id"],)
+    )
+    assert [r[0] for r in attempts] == [1]
     h.broker.fill(completion.cl_ord_id, completion.qty)
     h.tick(T15)
     assert h.intent_state() == "done"
@@ -280,19 +292,42 @@ def test_every_simulated_fill_carries_fees_and_slippage(tmp_path, variant) -> No
         assert Decimal(f["fee"]) == Decimal(f["qty"]) * price * rate
 
 
-def test_completion_runs_after_a_full_window_of_re_prices(tmp_path) -> None:
-    """The completion phase has its own submission count: after 12 window submissions
-    it still places completion orders, and ends as dust if it never reaches the threshold."""
+def test_completion_after_a_full_window_is_a_new_intent_with_its_own_budget(tmp_path):
+    """Audit M2 F-3: after the parent's 12 submissions, completion is a NEW intent (it
+    counts as an intent of the day and gets its own 12-submission budget under the normal
+    rules); it ends as dust if it never reaches the threshold."""
     h = Harness(tmp_path)
     h.tick()
     h.broker.fill(h.broker.placed[0].cl_ord_id, Decimal("0.00005"))
     for _ in range(12):
         h.tick(timedelta(minutes=30))  # re-price every 30 min through the window end
-    assert h.intent_state() == "completing"
-    before = len(h.broker.placed)
-    h.tick(T15)
-    assert len(h.broker.placed) == before + 1  # a completion order was placed
+    assert h.store.one("SELECT count(*) FROM orders WHERE intent_id = 1")[0] == 12
+    child = h.completion()
+    assert child is not None and child["parent_intent_id"] == 1
+    child_orders = h.store.one(
+        "SELECT count(*) FROM orders WHERE intent_id = ?", (child["intent_id"],)
+    )[0]
+    assert child_orders == 1
+    assert h.store.one("SELECT count(*) FROM intents")[0] == 2  # both count as intents
     h.tick(timedelta(hours=24))
+    assert h.outcome() == "dust"  # reported on the parent's signal
+
+
+def test_completion_intent_counts_against_max_order_intents_per_day(tmp_path) -> None:
+    from bot.risk.limits import RiskLimits
+
+    base = make_env(tmp_path / "cfg", CLOSES, sma_days=2).settings.risk
+    one_a_day = RiskLimits.model_validate(
+        {**base.model_dump(), "max_order_intents_per_day": 1}
+    )  # test-only limits object; config.yaml is untouched
+    h = Harness(tmp_path, limits=one_a_day)
+    h.tick()
+    h.broker.fill(h.broker.placed[0].cl_ord_id, Decimal("0.00005"))
+    h.tick(timedelta(hours=6))  # window end, same UTC day: the child is the 2nd intent
+    child = h.completion()
+    assert child["state"] == "cancelled"
+    rules = [r[0] for r in h.store.all("SELECT rule FROM risk_events WHERE kind='rejection'")]
+    assert "max_orders_per_day" in rules
     assert h.outcome() == "dust"
 
 

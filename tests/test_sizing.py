@@ -201,6 +201,8 @@ def test_below_minimum_remainder_of_a_partial_buy_enters_completion(tmp_path, mo
         h.engine, "_size", lambda *a: NoOrder("below_minimum", "remainder below amount_min")
     )
     h.tick(timedelta(minutes=30))
-    assert h.intent_state() == "completing"  # AD-13: the remainder goes to AD-28 completion
+    # AD-13: the remainder goes to AD-28 completion, a new intent linked to its parent.
+    child = h.completion()
+    assert child is not None and child["parent_intent_id"] == 1
     rows = h.store.all("SELECT kind, rule FROM risk_events")
     assert ("rejection", "minimums") in [(r[0], r[1]) for r in rows]

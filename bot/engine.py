@@ -464,7 +464,7 @@ class Engine:
         subs_today = self.store.one(
             "SELECT count(*) FROM orders WHERE substr(created_at, 1, 10) = ?", (day,)
         )[0]
-        intent_subs = 0 if intent_id is None else self._phase_submissions(intent_id)
+        intent_subs = 0 if intent_id is None else self._submissions(intent_id)
         return RiskContext(
             now=now,
             equity=self.store.equity_at(now, mid, self.cfg.pair),
@@ -762,7 +762,7 @@ class Engine:
         order = self._live_order(intent_id)
         if order is not None:
             self._sync_order(order, now)
-        completing = intent["state"] == "completing"
+        completing = intent["parent_intent_id"] is not None  # a completion intent
 
         if not completing and self._target_reached(intent_id):
             self._finish(intent_id, now, "done", "filled", None)
@@ -775,7 +775,7 @@ class Engine:
                 self._finish(intent_id, now, "done", "partially_filled", "completion reached")
             return
 
-        end = parse_iso(intent["completion_end_at"] if completing else intent["window_end_at"])
+        end = parse_iso(intent["window_end_at"])
         if now >= end:
             if completing:
                 self._end_completion(intent, now, ticker)
@@ -795,7 +795,7 @@ class Engine:
             accepted = parse_iso(order["accepted_at"] or order["created_at"])
             if now < accepted + self.cfg.reprice_interval:
                 return
-            if self._phase_submissions(intent_id) >= self.limits.max_submissions_per_intent:
+            if self._submissions(intent_id) >= self.limits.max_submissions_per_intent:
                 return  # no re-price left: the last order rests until the window end
             self._cancel_live(intent, now)
             if self._live_order(intent_id) is not None:
@@ -822,7 +822,7 @@ class Engine:
         post-only cross re-prices immediately; the risk caps bound the loop."""
         intent_id = intent["intent_id"]
         side = intent["side"]
-        completing = intent["state"] == "completing"
+        completing = intent["parent_intent_id"] is not None  # a completion intent
         crossed_at: Decimal | None = None
         for _ in range(self.limits.max_submissions_per_intent + 1):
             attempt = (
@@ -849,9 +849,13 @@ class Engine:
                 if sized.outcome == "below_minimum":
                     self._risk_event(now, "rejection", "minimums", intent_id, sized.reason, {})
                 if completing:
-                    return  # cannot size now; the completion end decides (dust or done)
+                    if self._sellable_now(ticker):
+                        self._finish(intent_id, now, "done", "partially_filled", sized.reason)
+                    else:
+                        self._completion_failed(intent, now, "done", sized.reason)
+                    return
                 if side == "buy" and filled > 0 and not self._sellable_now(ticker):
-                    self._start_completion(intent, now)  # AD-13: remainder -> AD-28
+                    self._start_completion(intent, now, ticker)  # AD-13: remainder -> AD-28
                     return
                 outcome = "partially_filled" if filled > 0 else sized.outcome
                 self._finish(intent_id, now, "done", outcome, sized.reason)
@@ -864,8 +868,11 @@ class Engine:
                 self._risk_event(
                     now, "rejection", decision.rule or "", intent_id, decision.reason or "", {}
                 )
-                if completing:
-                    return  # keep trying until completion_end_at, then dust (AD-28)
+                if completing:  # normal rules: a risk rejection ends the intent
+                    self._completion_failed(
+                        intent, now, "cancelled", f"{decision.rule}: {decision.reason}"
+                    )
+                    return
                 outcome = "partially_filled" if filled > 0 else "rejected_by_risk"
                 self._finish(
                     intent_id, now, "cancelled", outcome, f"{decision.rule}: {decision.reason}"
@@ -886,35 +893,62 @@ class Engine:
                 self._finish(intent_id, now, "cancelled", outcome, "exchange rejected the order")
             return
 
-    def _start_completion(self, intent, now: datetime) -> None:  # noqa: ANN001
-        """AD-28: an unsellable partial buy keeps re-pricing toward the sellable threshold
-        until ``completion_end_at`` = window end + completion window."""
+    def _start_completion(self, intent, now: datetime, ticker: Ticker) -> None:  # noqa: ANN001
+        """AD-28 (as amended after audit M2 F-3): an unsellable partial buy ends its intent
+        and opens a NEW completion intent linked by ``parent_intent_id``. The child is an
+        ordinary intent: it counts against ``max_order_intents_per_day``, has its own
+        ``max_submissions_per_intent`` budget, passes every risk check, and buys only up to
+        the sellable threshold until its window (parent window end + completion window)."""
+        mid = (ticker.bid + ticker.ask) / 2
+        position = self.store.position(self.cfg.pair)
+        target = completion_qty(position, self._price("buy", ticker), self.rules, self.limits)
         with self.store.transaction():
-            self.store.update(
-                "intents",
-                "intent_id",
+            self._finish(
                 intent["intent_id"],
-                state="completing",
-                completion_end_at=iso(
-                    parse_iso(intent["window_end_at"]) + self.cfg.completion_window
-                ),
+                now,
+                "done",
+                "partially_filled",
+                "unsellable remainder: a completion intent (parent_intent_id link) follows",
+            )
+            child = self.store.insert(
+                "intents",
+                parent_intent_id=intent["intent_id"],
+                pair=self.cfg.pair,
+                side="buy",
+                reference_price=dec(mid),
+                target_qty=dec(target if isinstance(target, Decimal) else Decimal(0)),
+                state="working",
+                approval_mode=intent["approval_mode"],
+                window_end_at=iso(parse_iso(intent["window_end_at"]) + self.cfg.completion_window),
+                created_at=iso(now),
                 updated_at=iso(now),
             )
+        self._resubmit(self._intent(child), now, ticker)
+
+    def _journal_signal(self, intent) -> str | None:  # noqa: ANN001
+        """The signal an intent reports to: its own, or its parent's for a completion."""
+        while intent["signal_id"] is None and intent["parent_intent_id"] is not None:
+            intent = self._intent(intent["parent_intent_id"])
+        return intent["signal_id"]
+
+    def _completion_failed(self, intent, now: datetime, state: str, why: str) -> None:  # noqa: ANN001
+        """A completion intent ends with the position still unsellable: dust (AD-13)."""
+        position = self.store.position(self.cfg.pair)
+        reason = f"completion ended ({why}) with unsellable position {position}"
+        with self.store.transaction():
+            self._risk_event(now, "dust", "minimums", intent["intent_id"], reason, {})
+            self.store.insert(
+                "errors", at=iso(now), component="engine", error_type="Dust", message=reason
+            )
+            self._finish(intent["intent_id"], now, state, "dust", reason)
+            self._set_outcome(self._journal_signal(intent), "dust", reason)
 
     def _sellable_by_minimums(self, position: Decimal, price: Decimal) -> bool:
         r = self.rules
         return position >= r.amount_min and position * price >= r.cost_min
 
-    def _phase_submissions(self, intent_id: int) -> int:
-        """Submissions of the intent's current phase: the window, or the completion phase
-        (which has its own count, so AD-28 completion can run after a full window; both
-        stay under the daily cap)."""
-        intent = self._intent(intent_id)
-        if intent["state"] == "completing":
-            return self.store.one(
-                "SELECT count(*) FROM orders WHERE intent_id = ? AND created_at >= ?",
-                (intent_id, intent["window_end_at"]),
-            )[0]
+    def _submissions(self, intent_id: int) -> int:
+        """Exchange submissions of this intent (first order + re-prices), AD-5/AD-11."""
         return self.store.one("SELECT count(*) FROM orders WHERE intent_id = ?", (intent_id,))[0]
 
     def _settle_overdue(self, intent_id: int, now: datetime) -> bool:
@@ -952,7 +986,7 @@ class Engine:
         if filled == 0:
             self._finish(intent_id, now, "done", "not_filled", "window ended unfilled")
         elif intent["side"] == "buy" and not self._sellable_now(ticker):
-            self._start_completion(intent, now)
+            self._start_completion(intent, now, ticker)
         else:
             self._finish(intent_id, now, "done", "partially_filled", "window ended")
 
@@ -964,11 +998,4 @@ class Engine:
         if self._sellable_now(ticker):
             self._finish(intent_id, now, "done", "partially_filled", "completion reached")
             return
-        position = self.store.position(self.cfg.pair)
-        reason = f"completion window ended with unsellable position {position}"
-        with self.store.transaction():
-            self._risk_event(now, "dust", "minimums", intent_id, reason, {})
-            self.store.insert(
-                "errors", at=iso(now), component="engine", error_type="Dust", message=reason
-            )
-            self._finish(intent_id, now, "done", "dust", reason)
+        self._completion_failed(intent, now, "done", "completion window ended")
