@@ -5,8 +5,8 @@ network library (architecture dependency rule).
 
 Modules:
     limits       RiskLimits, the frozen model of config.yaml ``risk:`` (M0)
-    checks       check_order(...) -> RiskDecision (M3)
-    halts        evaluate_halts(...) (M3)
+    checks       check_order(proposed, ctx, limits) -> RiskDecision (M2, pure)
+    halts        evaluate_halts(ctx, limits) -> list[HaltTrigger] (M2, pure)
     kill_switch  kill_switch_engaged / engage (M3)
 """
 
