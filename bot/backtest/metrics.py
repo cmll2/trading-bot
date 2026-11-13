@@ -53,8 +53,14 @@ class Metrics:
 
     def as_dict(self) -> dict[str, object]:
         d = asdict(self)
-        d["sharpe_ci_95"] = [round(v, 10) for v in self.sharpe_ci_95]
-        return {k: (round(v, 10) if isinstance(v, float) else v) for k, v in d.items()}
+        d["sharpe_ci_95"] = [_json_float(v) for v in self.sharpe_ci_95]
+        return {k: (_json_float(v) if isinstance(v, float) else v) for k, v in d.items()}
+
+
+def _json_float(v: float) -> float | None:
+    """Rounded to 10 decimals; a non-finite value (overflowed annualization) becomes
+    ``None`` so the results file stays valid JSON."""
+    return round(v, 10) if math.isfinite(v) else None
 
 
 def daily_returns(equity: np.ndarray) -> np.ndarray:

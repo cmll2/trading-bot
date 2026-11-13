@@ -100,6 +100,10 @@ def test_holdout_run_is_recorded_before_it_runs_and_evaluates_only_the_holdout(e
     assert j.name.endswith("_HOLDOUT.json")
     assert payload["results"]["maker"]["strategy"]["start"] >= "2020-02-20"
     assert payload["holdout"]["status"].startswith("THIS IS THE HOLDOUT RUN")
+    assert any("ONE-SHOT HOLDOUT RUN" in c for c in payload["caveats"])
+    assert payload["code_version"]["git_dirty"] is False
+    # Signals start with the candle that closes at holdout_start (opens 2020-02-19).
+    assert all(c >= "2020-02-19" for c in payload["lookahead_guard"]["cutpoints"])
 
 
 def test_second_holdout_run_without_rerun_flag_is_refused(env) -> None:
@@ -147,23 +151,67 @@ def test_change_above_five_is_refused(env) -> None:
 
 def test_change_needs_a_changes_md_entry(tmp_path) -> None:
     log = tmp_path / "changes.md"
-    log.write_text("# Strategy change log\n\n## Change 1\nwhat and why\n", encoding="utf-8")
-    check_change(0, log)
-    check_change(1, log)
+    log.write_text(
+        "# Strategy change log\n\n## other\n\n### Change 2\nx\n\n## v0_trend\n\n"
+        "### Change 1\nwhat and why\n",
+        encoding="utf-8",
+    )
+    check_change(0, "v0_trend", log)
+    check_change(1, "v0_trend", log)
     with pytest.raises(ChangeRefused, match="Change 2"):
-        check_change(2, log)
+        check_change(2, "v0_trend", log)  # Change 2 belongs to another strategy
+    check_change(2, "other", log)
     with pytest.raises(ChangeRefused):
-        check_change(-1, log)
+        check_change(-1, "v0_trend", log)
 
 
 def test_repo_changes_md_documents_the_rule_and_has_no_change_yet() -> None:
     text = (REPO_ROOT / "changes.md").read_text("utf-8")
     assert "at most five changes per strategy" in text
     with pytest.raises(ChangeRefused):
-        check_change(1)
+        check_change(1, "v0_trend")
 
 
 def test_cli_change_six_is_refused(env, capsys) -> None:
     base = ["backtest", "--config", str(env.config_path), "--env-file", str(env.env_path)]
     assert cli.main([*base, "--change", "6"], env={}) == cli.EXIT_REFUSED
     assert "limit of 5" in capsys.readouterr().err
+
+
+def test_holdout_run_refused_when_the_data_does_not_cover_the_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(command_mod, "git_dirty", lambda: False)
+    env = make_env(
+        tmp_path, CLOSES[:60], wiggle=0.005,
+        config_edits={**HOLDOUT, "backtest.walk_forward_fold_days": 30},
+    )  # fmt: skip
+    with pytest.raises(BacktestRefused, match="before holdout_end"):
+        execute(env.settings, _req(env, holdout=True))
+    assert not registry_path(env.settings).exists()
+
+
+def test_holdout_run_does_not_trade_before_the_holdout(env) -> None:
+    from bot.backtest import runner as runner_mod
+
+    runs = []
+    real = runner_mod.run_backtest
+
+    def spy(*a, **k):  # noqa: ANN002, ANN003, ANN202
+        r = real(*a, **k)
+        runs.append(r)
+        return r
+
+    import bot.backtest.command as cm
+
+    cm.run_backtest = spy
+    try:
+        execute(env.settings, _req(env, holdout=True))
+    finally:
+        cm.run_backtest = real
+    for r in runs[:1] + runs[-1:]:
+        assert all(str(o["created_at"]) >= "2020-02-20" for o in r.orders)
+
+
+def test_cli_reason_without_rerun_is_refused(env, capsys) -> None:
+    base = ["backtest", "--config", str(env.config_path), "--env-file", str(env.env_path)]
+    assert cli.main([*base, "--holdout", "--reason", "x"], env={}) == cli.EXIT_REFUSED
+    capsys.readouterr()

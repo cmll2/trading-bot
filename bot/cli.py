@@ -433,6 +433,9 @@ def _backtest_command(args: argparse.Namespace, settings: Settings, strategy_id:
     if args.rerun_holdout and not (args.reason or "").strip():
         _err("REFUSED: --rerun-holdout needs --reason")
         return EXIT_REFUSED
+    if args.reason is not None and not args.rerun_holdout:
+        _err("REFUSED: --reason is only used with --rerun-holdout")
+        return EXIT_REFUSED
     if args.holdout and (args.start or args.end):
         _err("REFUSED: the holdout run uses the fixed holdout window; no --start/--end")
         return EXIT_REFUSED

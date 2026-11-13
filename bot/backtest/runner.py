@@ -70,6 +70,7 @@ def run_backtest(
     variant: Variant,
     *,
     stop_after: datetime | None = None,
+    first_tick_at: datetime | None = None,
     strategy_id: str | None = None,
     params: dict[str, int] | None = None,
 ) -> RunResult:
@@ -91,6 +92,9 @@ def run_backtest(
     eval_start = daily["open_at"].iloc[strategy.warmup - 1].to_pydatetime() + day
 
     first = dataset.start + day + lag
+    if first_tick_at is not None:  # holdout run: warm up on history, trade from here
+        first = max(first, _floor(first_tick_at, day) + lag)
+        eval_start = max(eval_start, _floor(first_tick_at, day))
     clock = SimClock(first)
     frames = {(dataset.pair, t): f for t, f in dataset.frames.items()}
     md = ReplayMarketData.from_frames(frames, clock, settings.data)

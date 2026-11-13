@@ -12,8 +12,9 @@
   walk-forward reduces to consecutive out-of-sample folds of ``walk_forward_fold_days``
   over the pre-holdout evaluation window, each compared with buy-and-hold over the same
   fold. Folds never reach the holdout.
-- **Change limit**: ``bot backtest --change N`` refuses N > 5 and N >= 1 without a
-  ``## Change N`` entry in ``changes.md``.
+- **Change limit**: ``bot backtest --change N`` refuses N > 5, and N >= 1 without a
+  ``### Change N`` entry under the strategy's own ``## <strategy id>`` section of
+  ``changes.md`` (the limit counts per strategy).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -95,7 +97,7 @@ def register_holdout_run(settings: Settings, entry: dict[str, Any]) -> None:
         fh.write(json.dumps(entry, sort_keys=True) + "\n")
 
 
-def check_change(n: int, changes_path: Path = CHANGES_PATH) -> None:
+def check_change(n: int, strategy_id: str, changes_path: Path = CHANGES_PATH) -> None:
     if n < 0:
         raise ChangeRefused(f"--change must be >= 0, got {n}")
     if n > MAX_CHANGES:
@@ -103,8 +105,15 @@ def check_change(n: int, changes_path: Path = CHANGES_PATH) -> None:
     if n == 0:
         return
     text = changes_path.read_text(encoding="utf-8") if changes_path.exists() else ""
-    if not re.search(rf"^## Change {n}\b", text, flags=re.MULTILINE):
-        raise ChangeRefused(f"changes.md has no '## Change {n}' entry: log the change first")
+    section = re.search(
+        rf"^## {re.escape(strategy_id)}\s*$(.*?)(?=^## |\Z)", text, flags=re.MULTILINE | re.DOTALL
+    )
+    body = section.group(1) if section else ""
+    if not re.search(rf"^### Change {n}\b", body, flags=re.MULTILINE):
+        raise ChangeRefused(
+            f"changes.md has no '### Change {n}' entry under '## {strategy_id}': log the "
+            "change first"
+        )
 
 
 @dataclass(frozen=True)
@@ -114,10 +123,16 @@ class Fold:
     strategy_return: float
     buy_and_hold_return: float
     strategy_max_drawdown: float
-    trades: int
+    fills: int
 
 
-def walk_forward(run: RunResult, fold_days: int, holdout_start: date) -> list[dict[str, Any]]:
+def walk_forward(
+    run: RunResult,
+    fold_days: int,
+    holdout_start: date,
+    fee: Decimal,
+    slippage_bps: Decimal,
+) -> list[dict[str, Any]]:
     """Consecutive out-of-sample folds over the evaluation window (none touches the
     holdout); the last, shorter remainder is kept if it spans at least 30 days."""
     pts = [p for p in run.equity if p[0] >= run.eval_start]
@@ -142,16 +157,18 @@ def walk_forward(run: RunResult, fold_days: int, holdout_start: date) -> list[di
             for p in seg:
                 peak = max(peak, float(p[1]))
                 mdd = max(mdd, 1 - float(p[1]) / peak)
-            trades = sum(1 for f in run.fills if seg[0][0] <= parse_iso(str(f["at"])) < seg[-1][0])
+            fills = sum(1 for f in run.fills if seg[0][0] <= parse_iso(str(f["at"])) < seg[-1][0])
+            # Buy-and-hold for the fold pays its entry fee and slippage, like the strategy.
+            entry = seg[0][2] * (1 + slippage_bps * Decimal("0.0001")) * (1 + fee)
             folds.append(
                 asdict(
                     Fold(
                         start=seg[0][0].isoformat(),
                         end=seg[-1][0].isoformat(),
                         strategy_return=float(seg[-1][1] / seg[0][1] - 1),
-                        buy_and_hold_return=float(seg[-1][2] / seg[0][2] - 1),
+                        buy_and_hold_return=float(seg[-1][2] / entry - 1),
                         strategy_max_drawdown=mdd,
-                        trades=trades,
+                        fills=fills,
                     )
                 )
             )

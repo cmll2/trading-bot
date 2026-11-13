@@ -3,7 +3,7 @@ title: 'Walk-forward, holdout registry and change limit'
 type: feature
 ticket: '9'
 created: '2026-11-13'
-status: in-review
+status: built
 baseline_revision: '74ac2db'
 route: full
 route_source: auto
@@ -12,7 +12,7 @@ review: quick
 review_source: pinned
 lenses_ran: [quick]
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: []
 warnings: []
 deferred: []
@@ -65,6 +65,26 @@ Implemented in the coordinator's main session; committed together with story 8 r
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-11-13 — Review pass
+- verdicts: 9 findings — high 0, medium 3, low 6, false 0, maybe-false 0
+- findings:
+  - `[medium]` `[patch]` holdout report would always say `git_dirty: true` (registry line written first) — dirty flag read once before anything is written; test.
+  - `[medium]` `[patch]` holdout run traded up to ~10 days before holdout_start — `run_backtest(first_tick_at=holdout_start)`: warm-up on history, first tick at the holdout; guard reruns use the same first tick; test.
+  - `[medium]` `[patch]` no check that the data covers the holdout — refused before the registry line if the 1d cache ends before holdout_end; test.
+  - `[low]` `[patch]` holdout report carried the "holdout excluded" caveat — caveats depend on the run kind; test.
+  - `[low]` `[patch]` change limit not per strategy — `### Change N` under `## <strategy>`; changes.md and tests updated.
+  - `[low]` `[patch]` fold buy-and-hold was gross — pays entry fee + slippage.
+  - `[low]` `[patch]` fold "trades" counted fills — column renamed "fills".
+  - `[low]` `[patch]` `annualized` inf would write invalid JSON — non-finite floats become null.
+  - `[low]` `[patch]` `--reason` without `--rerun-holdout` dropped silently — refused; test.
+- Also fixed (found in the real trial run): the guard's drifting random walk overflowed over multi-year 15m futures — cumulative log-move clipped to ±5; test.
+
+## Auto Run Result
+
+- Summary: holdout registry + guard (tested on synthetic data only; real holdout not run), change limit per strategy, walk-forward folds, search trial count.
+- Review: 9 patches. Follow-up review recommended: true by formula (3 medium) — named risk: the holdout path has never run on real data by design; the operator's single run is its first real use.
+- Verification: full check at commit.
 
 ## Verification
 

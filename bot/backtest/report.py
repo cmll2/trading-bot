@@ -170,14 +170,14 @@ def render_markdown(p: dict[str, Any]) -> str:
     if p.get("walk_forward"):
         lines += ["## Walk-forward folds (out-of-sample, pre-holdout, maker fees)", ""]
         lines += [
-            "| Fold | From | To | Strategy | Buy-and-hold | Strategy max DD | Trades |",
+            "| Fold | From | To | Strategy | Buy-and-hold | Strategy max DD | Fills |",
             "|---|---|---|---|---|---|---|",
         ]
         for i, f in enumerate(p["walk_forward"], 1):
             lines.append(
                 f"| {i} | {f['start'][:10]} | {f['end'][:10]} | {_pct(f['strategy_return'])} "
                 f"| {_pct(f['buy_and_hold_return'])} | {f['strategy_max_drawdown']:.2%} "
-                f"| {f['trades']} |"
+                f"| {f['fills']} |"
             )
         lines.append("")
     lines += ["## Data anomalies", ""]

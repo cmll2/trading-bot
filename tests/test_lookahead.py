@@ -155,3 +155,16 @@ def test_guard_with_a_second_seed_also_catches_the_leak(tmp_path, leaky) -> None
             env.settings, env.start, end, ("1d", "15m"), base,
             strategy_id=LeakyTomorrow.id, seed=7, n_cutpoints=2,
         )  # fmt: skip
+
+
+def test_replaced_future_stays_finite_over_a_long_horizon(tmp_path) -> None:
+    import numpy as np
+
+    from bot.backtest.dataset import _random_walk_after
+
+    env = make_env(tmp_path, ZIGZAG, wiggle=0.01)
+    ds = dataset_mod.load_dataset(env.settings, env.start, end_date(env, len(ZIGZAG)), ("15m",))
+    frame = pd.concat([ds.frames["15m"]] * 40, ignore_index=True)  # ~230k rows to replace
+    cut = frame["open_at"].iloc[10]
+    out = _random_walk_after(frame, "15m", cut.to_pydatetime(), np.random.default_rng(1))
+    assert np.isfinite(out[["open", "high", "low", "close"]].to_numpy()).all()

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from bot.backtest import dataset as dataset_mod
 from bot.backtest.runner import InsufficientData, RunResult, run_backtest
@@ -61,6 +61,7 @@ def check_prefix_invariance(
     n_cutpoints: int | None = None,
     seed: int | None = None,
     allow_holdout: bool = False,
+    first_tick_at: datetime | None = None,
 ) -> LookAheadReport:
     n = settings.backtest.lookahead_cutpoints if n_cutpoints is None else n_cutpoints
     seed = settings.backtest.lookahead_seed if seed is None else seed
@@ -96,6 +97,7 @@ def check_prefix_invariance(
                 ds,
                 "maker",
                 stop_after=cut + lag,
+                first_tick_at=first_tick_at,
                 strategy_id=strategy_id,
                 params=params,
             )

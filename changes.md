@@ -3,7 +3,8 @@
 Rules (brief §5.3, FR-17, AD-21):
 
 - One change at a time, **at most five changes per strategy**. `bot backtest --change N`
-  refuses N > 5 and refuses N >= 1 unless this file has a `## Change N` entry.
+  refuses N > 5 and refuses N >= 1 unless the strategy's `## <strategy id>` section below
+  has a `### Change N` entry.
 - Each entry records: what changed and why, the git commit, the results file it produced,
   and the result (including when the change made things worse).
 - Changes are evaluated on pre-holdout data only. The holdout (2025-11-11 -> 2026-11-10)

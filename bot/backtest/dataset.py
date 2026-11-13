@@ -142,7 +142,9 @@ def _random_walk_after(
     returns = rng.normal(sigma, sigma, n)
     if mirror:
         returns = -returns
-    closes = prev * np.exp(np.cumsum(returns))
+    # Clip the cumulative log-move to +/-5 (x148 or /148): long multi-year futures stay
+    # finite while the direction still differs between a walk and its mirror.
+    closes = prev * np.exp(np.clip(np.cumsum(returns), -5.0, 5.0))
     opens = np.concatenate([[prev], closes[:-1]])
     wiggle = 1 + np.abs(rng.normal(0.0, sigma / 2, n))
     out.loc[mask, "open"] = opens

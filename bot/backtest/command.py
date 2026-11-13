@@ -78,7 +78,7 @@ def _check_range(settings: Settings, req: BacktestRequest) -> None:
         )
 
 
-def caveats(settings: Settings) -> list[str]:
+def caveats(settings: Settings, holdout_run: bool = False) -> list[str]:
     e, r = settings.execution, settings.risk
     return [
         f"Positions are capped by the protected risk limit max_position_abs_quote (EUR "
@@ -98,8 +98,12 @@ def caveats(settings: Settings) -> list[str]:
         f"exchange-halt) candles never fill. The taker variant fills at once at the ask/bid; "
         f"its buy-and-hold benchmark pays the same half spread.",
         "Equity of the strategy and of buy-and-hold is marked at mid, without exit costs.",
-        "Parameters were fixed before any evaluation; configurations tried: 1. The holdout "
-        "window is excluded and its data not loaded.",
+        "Parameters were fixed before any evaluation; configurations tried: 1. "
+        + (
+            "THIS IS THE ONE-SHOT HOLDOUT RUN: holdout data was loaded and evaluated."
+            if holdout_run
+            else "The holdout window is excluded and its data not loaded."
+        ),
     ]
 
 
@@ -126,7 +130,7 @@ def execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict[
     JSON and Markdown report; raises ``BacktestRefused`` / ``LookAheadError`` /
     ``InsufficientData`` before writing anything."""
     try:
-        check_change(req.change)
+        check_change(req.change, req.strategy_id)
     except ChangeRefused as exc:
         raise BacktestRefused(str(exc)) from exc
     if not req.holdout:
@@ -139,22 +143,32 @@ def execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict[
         raise NotImplementedError(f"strategy {req.strategy_id} is not implemented yet")
     timeframes = (strategy.timeframe, settings.execution.sim_timeframe)
     commit = git_commit()
+    dirty = git_dirty()  # read once, before anything (e.g. the registry line) is written
     start, end = req.start, req.end
     holdout_entry: dict[str, Any] | None = None
     if req.holdout:
         try:
-            rerun = check_holdout_allowed(settings, req.strategy_id, git_dirty(), req.rerun_reason)
+            rerun = check_holdout_allowed(settings, req.strategy_id, dirty, req.rerun_reason)
         except HoldoutRefused as exc:
             raise BacktestRefused(str(exc)) from exc
         hs = settings.backtest.holdout_start
         # Warm-up candles before the holdout are read; evaluation starts at holdout_start.
-        start = max(settings.data.history_start, hs - timedelta(days=strategy.warmup + 10))
+        warm = dataset_mod.interval(strategy.timeframe) * (strategy.warmup + 10)
+        start = max(
+            settings.data.history_start, (datetime.combine(hs, datetime.min.time()) - warm).date()
+        )
         end = settings.backtest.holdout_end + timedelta(days=1)
     try:
         ds = dataset_mod.load_dataset(settings, start, end, timeframes, allow_holdout=req.holdout)
     except dataset_mod.HoldoutViolation as exc:
         raise BacktestRefused(str(exc)) from exc
     if req.holdout:
+        last = ds.frames[strategy.timeframe]["open_at"].iloc[-1].date()
+        if last < settings.backtest.holdout_end:
+            raise BacktestRefused(
+                f"the cache ends at {last}, before holdout_end {settings.backtest.holdout_end}: "
+                "update the data first (the single holdout run must cover the whole window)"
+            )
         holdout_entry = {
             "strategy": req.strategy_id,
             "run_date": req.run_date.isoformat(),
@@ -174,19 +188,19 @@ def execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict[
         if req.holdout
         else None
     )
-    maker = run_backtest(settings, ds, "maker", strategy_id=req.strategy_id)
-    if eval_floor is not None:
-        maker.eval_start = max(maker.eval_start, eval_floor)
+    maker = run_backtest(
+        settings, ds, "maker", strategy_id=req.strategy_id, first_tick_at=eval_floor
+    )
     maker_block = _metrics(settings, maker, settings.fees.maker)
     # AD-4: raises LookAheadError before anything is written.
     guard = check_prefix_invariance(
         settings, start, end, timeframes, maker, strategy_id=req.strategy_id,
-        allow_holdout=req.holdout,
+        allow_holdout=req.holdout, first_tick_at=eval_floor,
     )  # fmt: skip
     # CON-06 report variant: same signals, filled at once at the aggressive side, taker fee.
-    taker = run_backtest(settings, ds, "taker", strategy_id=req.strategy_id)
-    if eval_floor is not None:
-        taker.eval_start = max(taker.eval_start, eval_floor)
+    taker = run_backtest(
+        settings, ds, "taker", strategy_id=req.strategy_id, first_tick_at=eval_floor
+    )
     taker_block = _metrics(
         settings, taker, settings.fees.taker, settings.execution.sim_half_spread_bps
     )
@@ -200,7 +214,7 @@ def execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict[
         "warmup_candles": strategy.warmup,
         "change": req.change,
         "configurations_tried": 1,
-        "code_version": {"git_commit": commit, "git_dirty": git_dirty()},
+        "code_version": {"git_commit": commit, "git_dirty": dirty},
         "config_hash": config_hash(settings),
         "limits_hash": limits_hash(settings),
         "data": {
@@ -230,7 +244,11 @@ def execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict[
             []
             if req.holdout
             else walk_forward(
-                maker, settings.backtest.walk_forward_fold_days, settings.backtest.holdout_start
+                maker,
+                settings.backtest.walk_forward_fold_days,
+                settings.backtest.holdout_start,
+                settings.fees.maker,
+                settings.slippage_bps,
             )
         ),
         "market_rules": maker.rules_snapshot,
@@ -257,7 +275,7 @@ def execute(settings: Settings, req: BacktestRequest) -> tuple[Path, Path, dict[
         },
         "results": {"maker": maker_block, "taker": taker_block},
         "data_anomalies": anomaly_block(anomalies_in(ds), {"maker": maker, "taker": taker}),
-        "caveats": caveats(settings),
+        "caveats": caveats(settings, req.holdout),
     }
     stem = results_stem(req.run_date, req.strategy_id, commit)
     if req.holdout:
