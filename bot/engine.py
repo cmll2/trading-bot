@@ -32,7 +32,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from pathlib import Path
 from typing import Literal
 
-from bot.broker.base import Broker, MarketRules, OrderRequest, Ticker
+from bot.broker.base import Broker, MarketRules, OrderRequest, OrderStatus, Ticker
 from bot.broker.errors import (
     OrderOutcomeUnknown,
     OrderRejected,
@@ -82,6 +82,11 @@ TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 
+UNKNOWN_POLL = timedelta(seconds=10)  # AD-8 find_order cadence for an unknown order
+READ_RETRIES = 3  # AD-8: a failed read is retried at most 3 times, then logged
+_UNSET = object()
+
+
 class IllegalTransition(RuntimeError):
     """An order state change not allowed by AD-8."""
 
@@ -117,6 +122,7 @@ class EngineConfig:
     pricing: Literal["passive", "aggressive"] = "passive"
     fill_settle_timeout: timedelta = timedelta(seconds=60)  # AD-27
     unknown_grace: timedelta = timedelta(seconds=60)  # AD-8: unknown -> not_found after this
+    exec_timeframe: str = "15m"  # AD-6 execution candles (exchange-halt detection, F-5)
 
 
 @dataclass(frozen=True)
@@ -159,6 +165,8 @@ class Engine:
         self._interval = timedelta(seconds=TIMEFRAME_SECONDS[config.timeframe])
         self._rules: MarketRules | None = None
         self.run_id: int | None = None
+        self._unsettled_since: dict[int, datetime] = {}
+        self._last_ticker_ok: datetime | None = None
 
     # --- lifecycle ----------------------------------------------------------------------
 
@@ -228,7 +236,9 @@ class Engine:
             ticker = self.broker.get_ticker(self.cfg.pair)
         except (TransientReadError, RateLimited) as exc:
             self._error(now, "ticker", exc)
+            self._own_feed_blind(now)
             return TickResult(halted=bool(self._active_halts()), signal_evaluated=False)
+        self._last_ticker_ok = ticker.ts
         mid = (ticker.bid + ticker.ask) / 2
         first_of_day = self._day_open(now, mid)
 
@@ -430,10 +440,136 @@ class Engine:
                 self.error(now, "cancel_all_resting", exc)
 
     def recover(self, now: datetime) -> None:
-        """AD-8 startup sequence (story 2)."""
+        """AD-8 startup sequence after any start, crash included (steps 2 to 7; the lock
+        is step 1, reconciliation step 8, and the next tick continues or ends each intent,
+        step 9).
+
+        - pending ``reset_halt`` operator actions are applied first;
+        - ``created`` orders were never sent: ``not_found``;
+        - ``submitting`` orders may exist: ``unknown``, then resolved with ``find_order``
+          (open AND closed) every 10 s up to ``unknown_grace``; only ``not_found`` frees
+          the intent for a new attempt with a new ``cl_ord_id``;
+        - every other open-like order is re-synced after its fills are ingested (once
+          each, keyed by exchange trade id, AD-27);
+        - a ``pending`` signal without an intent is re-evaluated if its window is still
+          open, else ends ``not_filled`` / ``restart_window_passed`` (AD-28).
+        """
+        self._consume_actions(now, kinds=("reset_halt",))
+        for order in self.store.all("SELECT * FROM orders WHERE state = 'created'"):
+            self._transition(order["order_id"], "not_found", now, closed_at=iso(now))
+            log.warning("recover: order %s was never sent: not_found", order["cl_ord_id"])
+        for order in self.store.all("SELECT * FROM orders WHERE state = 'submitting'"):
+            self._transition(order["order_id"], "unknown", now)
+            log.warning("recover: order %s outcome unknown: looking it up", order["cl_ord_id"])
+        marks = ",".join("?" for _ in LIVE_ORDER_STATES)
+        intents = self.store.all(
+            f"SELECT DISTINCT i.* FROM intents i JOIN orders o USING (intent_id) "  # noqa: S608
+            f"WHERE o.state IN ({marks})",
+            LIVE_ORDER_STATES,
+        )
+        for intent in intents:
+            self._ingest_fills(intent, now)
+            order = self._live_order(intent["intent_id"])
+            if order is None:
+                continue
+            if order["state"] == "unknown":
+                self._resolve_unknown(order)
+            else:
+                self._sync_order(order, self.clock.now())
+        self._resume_pending_signals(self.clock.now())
+
+    def _resume_pending_signals(self, now: datetime) -> None:
+        rows = self.store.all(
+            "SELECT s.* FROM signals s LEFT JOIN intents i ON i.signal_id = s.signal_id "
+            "WHERE s.outcome = 'pending' AND i.intent_id IS NULL ORDER BY s.candle_open_at"
+        )
+        for sig in rows:
+            open_at = parse_iso(sig["candle_open_at"])
+            window_end = open_at + self._interval + self.cfg.window
+            if now >= window_end:
+                with self.store.transaction():
+                    self._set_outcome(sig["signal_id"], "not_filled", "restart_window_passed")
+                continue
+            ticker = self._read("get_ticker", self.broker.get_ticker, self.cfg.pair)
+            with self.store.transaction():
+                submit = self._decide_and_open(
+                    sig["signal_id"],
+                    Decimal(sig["target_fraction"]),
+                    Decimal(sig["signal_price"]),
+                    window_end,
+                    now,
+                    ticker,
+                )
+            self._submit_first(submit, now, ticker)
+
+    def _resolve_unknown(self, order) -> str:  # noqa: ANN001 - sqlite3.Row
+        """AD-8: look an ``unknown`` order up (open AND closed) every 10 s until it is
+        found or ``unknown_grace`` has passed since it became unknown; never resend it."""
+        since_row = self.store.one(
+            "SELECT at FROM order_events WHERE order_id = ? AND to_state = 'unknown' "
+            "ORDER BY event_id DESC",
+            (order["order_id"],),
+        )
+        since = parse_iso(since_row["at"]) if since_row else self.clock.now()
+        while True:
+            now = self.clock.now()
+            status = self._read(
+                "find_order", self.broker.find_order, self.cfg.pair, order["cl_ord_id"]
+            )
+            if status is not None or now - since >= self.cfg.unknown_grace:
+                if status is not None:
+                    self._ingest_fills(self._intent(order["intent_id"]), now)
+                fresh = self.store.one(
+                    "SELECT * FROM orders WHERE order_id = ?", (order["order_id"],)
+                )
+                return self._sync_order(fresh, now, status=status, resolved=True)
+            self.clock.sleep_until(min(now + UNKNOWN_POLL, since + self.cfg.unknown_grace))
 
     def reconcile(self, now: datetime) -> None:
         """AD-9 reconciliation (story 3)."""
+
+    def _consume_actions(self, now: datetime, kinds: tuple[str, ...] | None = None) -> None:
+        """Consume pending operator actions (stories 5 to 7)."""
+
+    def _read(self, name: str, fn: Callable, *args: object):  # noqa: ANN202
+        """A broker read with AD-8 handling: ``RateLimited`` sleeps ``retry_after_s``,
+        ``TransientReadError`` backs off; at most ``READ_RETRIES`` retries, each failure
+        recorded in ``api_calls``; no state changes. The last failure propagates (the tick
+        is skipped and the error recorded)."""
+        attempt = 0
+        while True:
+            try:
+                return fn(*args)
+            except RateLimited as exc:
+                self._api_failure(name, True)
+                if attempt >= READ_RETRIES:
+                    raise
+                wait = timedelta(seconds=exc.retry_after_s)
+            except TransientReadError:
+                self._api_failure(name, False)
+                if attempt >= READ_RETRIES:
+                    raise
+                wait = timedelta(seconds=2**attempt)
+            attempt += 1
+            self.clock.sleep_until(self.clock.now() + wait)
+
+    def _api_failure(self, name: str, rate_limited: bool) -> None:
+        self.store.insert(
+            "api_calls",
+            at=iso(self.clock.now()),
+            endpoint=f"broker.{name}",
+            latency_ms=0,
+            ok=0,
+            rate_limited=int(rate_limited),
+        )
+
+    def _unknown_grace_passed(self, order, now: datetime) -> bool:  # noqa: ANN001
+        row = self.store.one(
+            "SELECT at FROM order_events WHERE order_id = ? AND to_state = 'unknown' "
+            "ORDER BY event_id DESC",
+            (order["order_id"],),
+        )
+        return row is None or now - parse_iso(row["at"]) >= self.cfg.unknown_grace
 
     def _risk_event(
         self,
@@ -618,13 +754,10 @@ class Engine:
         indicators = self.strategy.indicators(hist)
         signal_price = Decimal(repr(float(hist.close[-1])))
         window_end = last + self._interval + self.cfg.window
-        mid = (ticker.bid + ticker.ask) / 2
-        submit: tuple[int, Decimal, Decimal, str, RiskDecision] | None = None
         if self._active_intent() is None:
             # AD-13: minimums change without notice; re-read them before each decision,
             # outside any transaction (a broker call).
             self._rules = self.broker.load_market(self.cfg.pair)
-
         with self.store.transaction():
             self.store.insert(
                 "signals",
@@ -640,60 +773,108 @@ class Engine:
                 indicators_json=json.dumps(indicators, sort_keys=True),
                 outcome="pending",
             )
-            side, why = self._decide(target, signal_price)
-            if self._active_intent() is not None:
-                self._set_outcome(signal_id, "no_action", "intent_active")
-            elif side is None:
-                self._set_outcome(signal_id, "no_action", why)
-            elif now >= window_end:
-                self._set_outcome(signal_id, "not_filled", "window_passed")
-            else:
-                price = self._price(side, ticker)
-                sized = self._size(side, target, price, now, mid)
-                if isinstance(sized, NoOrder):
-                    self._set_outcome(signal_id, sized.outcome, sized.reason)
-                    if sized.outcome == "below_minimum":
-                        self._risk_event(now, "rejection", "minimums", None, sized.reason, {})
-                else:
-                    cl = self._new_id()
-                    proposed = ProposedOrder(0, 1, False, side, sized, price, cl)  # type: ignore[arg-type]
-                    decision = check_order(
-                        proposed, self._risk_context(now, ticker, signal_price, None), self.limits
-                    )
-                    if not decision.approved:
-                        self._set_outcome(
-                            signal_id, "rejected_by_risk", f"{decision.rule}: {decision.reason}"
-                        )
-                        self._risk_event(
-                            now, "rejection", decision.rule or "", None, decision.reason or "", {}
-                        )
-                    else:
-                        approval = self.cfg.approval  # the backtest wiring forces autonomous
-                        intent_id = self.store.insert(
-                            "intents",
-                            signal_id=signal_id,
-                            pair=self.cfg.pair,
-                            side=side,
-                            reference_price=dec(signal_price),
-                            target_qty=dec(sized),
-                            state="working" if approval == "autonomous" else "awaiting_approval",
-                            approval_mode=approval,
-                            window_end_at=iso(window_end),
-                            created_at=iso(now),
-                            updated_at=iso(now),
-                        )
-                        if approval == "autonomous":
-                            submit = (intent_id, sized, price, cl, decision)
-        if submit is not None:
-            intent_id, qty, price, cl, decision = submit
-            result = self._place(self._intent(intent_id), 1, qty, price, cl, decision, now)
-            if result == "cross":
-                self._resubmit(self._intent(intent_id), now, ticker)  # AD-5 immediate re-price
-            elif result == "rejected":
-                self._finish(
-                    intent_id, now, "cancelled", "rejected_by_risk", "exchange rejected the order"
-                )
+            submit = self._decide_and_open(signal_id, target, signal_price, window_end, now, ticker)
+        self._submit_first(submit, now, ticker)
         return True
+
+    def _decide_and_open(
+        self,
+        signal_id: str,
+        target: Decimal,
+        signal_price: Decimal,
+        window_end: datetime,
+        now: datetime,
+        ticker: Ticker,
+    ) -> tuple[int, Decimal, Decimal, str, RiskDecision] | None:
+        """Decide, size, risk-check and open the intent of a journaled signal (inside the
+        caller's transaction, AD-28). Returns the first submission for an autonomous
+        intent, to be sent after the commit (AD-7)."""
+        mid = (ticker.bid + ticker.ask) / 2
+        side, why = self._decide(target, signal_price)
+        active = self._active_intent()
+        if active is not None:
+            reason = "flatten_active" if active["is_flatten"] else "intent_active"
+            self._set_outcome(signal_id, "no_action", reason)
+            return None
+        if side is None:
+            self._set_outcome(signal_id, "no_action", why)
+            return None
+        if now >= window_end:
+            self._set_outcome(signal_id, "not_filled", "window_passed")
+            return None
+        price = self._price(side, ticker)
+        sized = self._size(side, target, price, now, mid)
+        if isinstance(sized, NoOrder):
+            self._set_outcome(signal_id, sized.outcome, sized.reason)
+            if sized.outcome == "below_minimum":
+                self._risk_event(now, "rejection", "minimums", None, sized.reason, {})
+            return None
+        cl = self._new_id()
+        proposed = ProposedOrder(0, 1, False, side, sized, price, cl)  # type: ignore[arg-type]
+        decision = check_order(
+            proposed, self._risk_context(now, ticker, signal_price, None), self.limits
+        )
+        if not decision.approved:
+            self._set_outcome(signal_id, "rejected_by_risk", f"{decision.rule}: {decision.reason}")
+            self._risk_event(now, "rejection", decision.rule or "", None, decision.reason or "", {})
+            return None
+        approval = self.cfg.approval  # the backtest wiring forces autonomous
+        intent_id = self.store.insert(
+            "intents",
+            signal_id=signal_id,
+            pair=self.cfg.pair,
+            side=side,
+            reference_price=dec(signal_price),
+            target_qty=dec(sized),
+            state="working" if approval == "autonomous" else "awaiting_approval",
+            approval_mode=approval,
+            approval_deadline_at=None if approval == "autonomous" else iso(window_end),
+            window_end_at=iso(window_end),
+            created_at=iso(now),
+            updated_at=iso(now),
+        )
+        if approval == "autonomous":
+            return (intent_id, sized, price, cl, decision)
+        self._announce_approval(intent_id, side, sized, price, signal_price, window_end)
+        return None
+
+    def _announce_approval(  # noqa: PLR0913
+        self,
+        intent_id: int,
+        side: str,
+        qty: Decimal,
+        price: Decimal,
+        reference: Decimal,
+        deadline: datetime,
+    ) -> None:
+        """AD-16: print and log the order awaiting approval with its allowed price band."""
+        band = self.limits.price_sanity_fraction
+        lo, hi = reference * (1 - band), reference * (1 + band)
+        msg = (
+            f"APPROVAL NEEDED (intent {intent_id}): {side} {qty} {self.cfg.pair} post-only "
+            f"limit ~{price}; allowed price band {lo:.2f}..{hi:.2f} (+/-{band * 100}% of "
+            f"{reference}); expires {iso(deadline)}. Approve: bot approve {intent_id} --note "
+            f"... | Reject: bot reject {intent_id} --note ..."
+        )
+        log.warning(msg)
+        print(msg, flush=True)  # noqa: T201 - operator channel (AD-16, OD-13)
+
+    def _submit_first(
+        self,
+        submit: tuple[int, Decimal, Decimal, str, RiskDecision] | None,
+        now: datetime,
+        ticker: Ticker,
+    ) -> None:
+        if submit is None:
+            return
+        intent_id, qty, price, cl, decision = submit
+        result = self._place(self._intent(intent_id), 1, qty, price, cl, decision, now)
+        if result == "cross":
+            self._resubmit(self._intent(intent_id), now, ticker)  # AD-5 immediate re-price
+        elif result == "rejected":
+            self._finish(
+                intent_id, now, "cancelled", "rejected_by_risk", "exchange rejected the order"
+            )
 
     def _check_closed(self, candle_open_at: datetime, now: datetime) -> None:
         """Every evaluated candle must be closed at evaluation: open_at + interval <= now."""
@@ -760,9 +941,11 @@ class Engine:
             self._transition(order_id, "rejected", now, reject_reason=str(exc))
             self._risk_event(now, "exchange_reject", "exchange", intent_id, str(exc), {"cl": cl})
             return "rejected"
-        except OrderOutcomeUnknown:
+        except OrderOutcomeUnknown as exc:
             self._transition(order_id, "unknown", now)
-            return "unknown"
+            log.warning("place_order outcome unknown for %s: %s", cl, exc)
+            order = self.store.one("SELECT * FROM orders WHERE order_id = ?", (order_id,))
+            return self._resolve_unknown(order)
         except (RateLimited, TransientReadError) as exc:
             self._transition(order_id, "rejected", now, reject_reason=f"not sent: {exc}")
             return "retry"
@@ -779,7 +962,7 @@ class Engine:
 
     def _ingest_fills(self, intent, now: datetime) -> None:  # noqa: ANN001
         since = parse_iso(intent["created_at"])
-        for f in self.broker.get_fills(self.cfg.pair, since):
+        for f in self._read("get_fills", self.broker.get_fills, self.cfg.pair, since):
             if self.store.one(
                 "SELECT 1 FROM fills WHERE exchange = ? AND exchange_trade_id = ?",
                 (self.broker.name, f.exchange_trade_id),
@@ -830,22 +1013,55 @@ class Engine:
                 total = Decimal(self._intent(order["intent_id"])["filled_qty"]) + f.qty
                 self.store.update("intents", "intent_id", order["intent_id"], filled_qty=dec(total))
 
-    def _sync_order(self, order, now: datetime) -> str:  # noqa: ANN001
-        """Bring one live order's state in line with the broker (after fills are ingested)."""
-        status = self.broker.find_order(self.cfg.pair, order["cl_ord_id"])
+    def _sync_order(  # noqa: ANN001
+        self, order, now: datetime, status: object = _UNSET, resolved: bool = False
+    ) -> str:
+        """Bring one live order's state in line with the broker (after fills are ingested).
+
+        An ``unknown`` order absent from the broker becomes ``not_found`` only after
+        ``unknown_grace`` (AD-8). Fills reported by the broker but not yet ingested block
+        any terminal transition (AD-27); if they do not settle within
+        ``fill_settle_timeout`` the engine halts with ``reconcile_mismatch``."""
+        if status is _UNSET:
+            status = self._read(
+                "find_order", self.broker.find_order, self.cfg.pair, order["cl_ord_id"]
+            )
         state = order["state"]
         if status is None:
             if state == "unknown":
-                self._transition(order["order_id"], "not_found", now)
+                if not resolved and not self._unknown_grace_passed(order, now):
+                    return state
+                self._transition(order["order_id"], "not_found", now, closed_at=iso(now))
+                log.warning("order %s not found after the grace: not_found", order["cl_ord_id"])
                 return "not_found"
             return state
+        assert isinstance(status, OrderStatus)
         stored = Decimal(
             self.store.one(
                 "SELECT filled_qty FROM orders WHERE order_id = ?", (order["order_id"],)
             )[0]
         )
+        if stored > status.filled_qty:
+            self.raise_halt(
+                now,
+                "reconcile_mismatch",
+                f"order {order['cl_ord_id']}: ingested fills {stored} exceed the exchange's "
+                f"filled quantity {status.filled_qty}",
+                kind="reconcile_mismatch",
+            )
+            return state
         if stored != status.filled_qty:
+            first = self._unsettled_since.setdefault(order["order_id"], now)
+            if now - first > self.cfg.fill_settle_timeout:
+                self.raise_halt(
+                    now,
+                    "reconcile_mismatch",
+                    f"order {order['cl_ord_id']}: fills not settled within the timeout "
+                    f"(ingested {stored}, exchange {status.filled_qty})",
+                    kind="reconcile_mismatch",
+                )
             return state  # fills not ingested yet (AD-27): no terminal transition
+        self._unsettled_since.pop(order["order_id"], None)
         if status.state == "open":
             new = "partially_filled" if status.filled_qty > 0 else "open"
             if state == "cancel_requested" or new == state:
@@ -858,18 +1074,35 @@ class Engine:
             ]
             if new == state:
                 return state
-        closed = {"closed_at": iso(now)} if new in ("filled", "cancelled", "rejected") else {}
-        self._transition(order["order_id"], new, now, **closed)
+        cols: dict[str, object] = {}
+        if new in ("filled", "cancelled", "rejected"):
+            cols["closed_at"] = iso(now)
+        if order["exchange_order_id"] is None and status.exchange_order_id:
+            cols["exchange_order_id"] = status.exchange_order_id  # found after a restart
+        self._transition(order["order_id"], new, now, **cols)
         return new
 
     def _cancel_live(self, intent, now: datetime) -> None:  # noqa: ANN001
-        """Cancel the intent's live order, then ingest its final fills (AD-27)."""
+        """Cancel the intent's live order, then ingest its final fills (AD-27). A cancel
+        that times out stays ``cancel_requested`` and is re-sent and re-checked on the
+        next tick (AD-8); an ``unknown`` order is resolved first, never cancelled blind."""
         order = self._live_order(intent["intent_id"])
         if order is None:
             return
+        if order["state"] == "unknown":
+            self._resolve_unknown(order)
+            order = self._live_order(intent["intent_id"])
+            if order is None:
+                return
         if order["state"] in ("open", "partially_filled"):
             self._transition(order["order_id"], "cancel_requested", now)
-            self.broker.cancel_order(self.cfg.pair, order["cl_ord_id"])
+            order = self.store.one("SELECT * FROM orders WHERE order_id = ?", (order["order_id"],))
+        if order["state"] == "cancel_requested":
+            try:
+                self.broker.cancel_order(self.cfg.pair, order["cl_ord_id"])
+            except (OrderOutcomeUnknown, TransientReadError, RateLimited, OrderRejected) as exc:
+                # Re-checked with find_order (and re-sent) on the next tick.
+                self.error(now, "cancel", exc)
         self._ingest_fills(intent, now)
         order = self.store.one("SELECT * FROM orders WHERE order_id = ?", (order["order_id"],))
         self._sync_order(order, now)
@@ -908,9 +1141,15 @@ class Engine:
             return
 
         if now - ticker.ts > timedelta(seconds=self.limits.stale_ticker_seconds):
-            # Exchange halted or feed stale (synthetic candles, audit M1 F-2): keep the
-            # resting order (it cannot fill on synthetic candles) instead of cancelling and
-            # being refused by the stale_ticker rule; the window end still applies.
+            if not self._exchange_halted():
+                # Audit M2 F-5: OUR feed is stale, the exchange is trading. The bot is
+                # blind, so the resting order is cancelled (cancels reduce risk and are
+                # always allowed); re-pricing waits for a fresh ticker (stale_ticker rule).
+                self._cancel_stale(intent, now, "own ticker stale")
+                return
+            # Exchange halted (synthetic candles, audit M1 F-2): keep the resting order (it
+            # cannot fill on synthetic candles) instead of cancelling and being refused by
+            # the stale_ticker rule; the window end still applies.
             return
         order = self._live_order(intent_id)
         if order is not None:
@@ -928,6 +1167,46 @@ class Engine:
                 self._finish(intent_id, now, "done", "filled", None)
                 return
         self._resubmit(self._intent(intent_id), now, ticker)
+
+    def _exchange_halted(self) -> bool:
+        """True when the latest closed execution candle is synthetic: a no-trade period,
+        which includes exchange trading halts (audit M1 F-2). Live candles from the public
+        API are never synthetic, so in dry-run/live a stale ticker means our own feed."""
+        try:
+            hist = self.md.closed_candles(self.cfg.pair, self.cfg.exec_timeframe, limit=1)
+        except (TransientReadError, RateLimited):
+            return False
+        return bool(len(hist)) and bool(hist.synthetic[-1])
+
+    def _own_feed_blind(self, now: datetime) -> None:
+        """The ticker read failed. Once no good ticker has been seen for longer than
+        ``stale_ticker_seconds``, cancel the resting order (audit M2 F-5): the bot must not
+        keep an order working while it cannot see the market."""
+        stale = timedelta(seconds=self.limits.stale_ticker_seconds)
+        if self._last_ticker_ok is not None and now - self._last_ticker_ok <= stale:
+            return
+        intent = self._active_intent()
+        if intent is None or self._exchange_halted():
+            return
+        try:
+            self._cancel_stale(intent, now, "ticker unavailable")
+        except (TransientReadError, RateLimited, OrderOutcomeUnknown) as exc:
+            self.error(now, "cancel_on_blind_feed", exc)
+
+    def _cancel_stale(self, intent, now: datetime, why: str) -> None:  # noqa: ANN001
+        order = self._live_order(intent["intent_id"])
+        if order is None or order["state"] not in ("open", "partially_filled"):
+            return
+        self._risk_event(
+            now,
+            "stale_data",
+            "stale_ticker",
+            intent["intent_id"],
+            f"{why}: resting order {order['cl_ord_id']} cancelled (audit M2 F-5)",
+            {},
+        )
+        log.warning("%s: cancelling resting order %s", why, order["cl_ord_id"])
+        self._cancel_live(intent, now)
 
     def _target_reached(self, intent_id: int) -> bool:
         return (

@@ -247,6 +247,7 @@ def engine_config(
         limits_hash=limits_hash(settings),
         fill_settle_timeout=timedelta(seconds=ex.fill_settle_timeout_seconds),
         unknown_grace=timedelta(seconds=ex.unknown_grace_seconds),
+        exec_timeframe=ex.sim_timeframe,
     )
 
 
