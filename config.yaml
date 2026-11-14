@@ -96,8 +96,8 @@ paths:
 plumbing:
   flip_hours: 2
   target_pct: 50
-  window_minutes: 45                # <= its 1h timeframe (AD-5)
-  reprice_interval_minutes: 15
+  window_minutes: 60                # <= its 1h timeframe (AD-5)
+  reprice_interval_minutes: 30      # >= 2 execution candles: an order can fill before re-pricing
   completion_window_minutes: 60
 
 # ---------------------------------------------------------------------------------------

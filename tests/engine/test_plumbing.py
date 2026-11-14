@@ -56,17 +56,17 @@ def test_plumbing_alternates_every_flip_hours_and_claims_no_edge() -> None:
     assert s.label == LABEL == "plumbing - no edge"
 
 
-def test_one_hour_plumbing_dry_run_produces_several_orders_on_its_own_store(tmp_path) -> None:
+def test_plumbing_dry_run_produces_several_orders_on_its_own_store(tmp_path) -> None:
     # Start just before 01:00: the 00:00 hourly candle is in a "hold 50 %" block.
     clock = FakeClock(T0 + timedelta(minutes=59, seconds=55))
     exchange = FakePublicKraken(clock)
     dry, _ = dry_run(tmp_path, clock, exchange, strategy="plumbing")
     assert dry.db_path.name == "dry-run-plumbing.sqlite"
-    assert run(dry, ticks=120).exit_code == 0  # one hour of 30 s ticks (SIMULATED)
+    assert run(dry, ticks=240).exit_code == 0  # two hours of 30 s ticks (SIMULATED)
     st = dry.store
     assert st.get_meta("strategy_id") == "plumbing" and st.get_meta("mode") == "dry-run"
     orders = st.one("SELECT count(*) FROM orders")[0]
-    assert orders >= 3  # first order + 15-minute re-prices on flat fake candles
+    assert orders >= 3  # 2 per hourly intent (first + one 30-min re-price), unfilled
     assert {r[0] for r in st.all("SELECT strategy_id FROM signals")} == {"plumbing"}
     assert not (tmp_path / "var" / "state" / "dry-run-v0_trend.sqlite").exists()
     status = ops.status(dry.db_path, clock.now(), 30, tmp_path / "KILL")
@@ -76,5 +76,5 @@ def test_one_hour_plumbing_dry_run_produces_several_orders_on_its_own_store(tmp_
 def test_plumbing_execution_window_fits_its_timeframe(tmp_path) -> None:
     dry, _ = dry_run(tmp_path, FakeClock(T0), strategy="plumbing")
     cfg = dry.engine.cfg
-    assert cfg.timeframe == "1h" and cfg.window == timedelta(minutes=45)
-    assert cfg.reprice_interval == timedelta(minutes=15)
+    assert cfg.timeframe == "1h" and cfg.window == timedelta(minutes=60)
+    assert cfg.reprice_interval == timedelta(minutes=30)

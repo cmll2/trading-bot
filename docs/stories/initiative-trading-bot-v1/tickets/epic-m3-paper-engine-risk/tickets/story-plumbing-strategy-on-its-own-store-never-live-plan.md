@@ -22,8 +22,11 @@ live gate refuse it in live.
 ## Decisions
 
 - Timeframe 1h (was a 15m placeholder): with 15m execution candles a 15m strategy could not
-  re-price inside a window <= its timeframe (AD-5). Hourly candles, 45 min window, 15 min
-  re-price, 60 min completion window (`plumbing:` section in config.yaml, validated).
+  re-price inside a window <= its timeframe (AD-5). Hourly candles, 60 min window, 30 min
+  re-price, 60 min completion window (`plumbing:` section in config.yaml, validated). A
+  15 min re-price (first draft) cancelled every order just before its first eligible 15m
+  candle closed, so nothing could ever fill (found by the story 9 consistency run): the
+  re-price interval must span two execution candles.
 - Holds `target_pct` (50 %) of equity, then nothing, switching every `flip_hours` (2) hours
   of candle open time: about 12 intents/day, under the protected 20/day backstop; 50 % keeps
   the fee drag (~2.7 %/day SIMULATED) below the daily-loss halt on its own.
@@ -35,6 +38,6 @@ live gate refuse it in live.
 
 `tests/engine/test_plumbing.py` (5): builds for dry-run, absent from LIVE_STRATEGIES, live
 build refused, live CLI refused even with both gates; alternation and no-edge label; a
-1-hour fake-clock dry-run produces >= 3 orders on `dry-run-plumbing.sqlite` only, status
+2-hour fake-clock dry-run produces >= 3 orders on `dry-run-plumbing.sqlite` only, status
 labelled; window fits the timeframe. The existing `tests/test_cli.py` plumbing-live tests
 still pass.
