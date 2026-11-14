@@ -356,20 +356,93 @@ class Engine:
                 consumed_at=iso(now),
                 result="applied",
             )
-            for r in rows:
-                self.store.update(
-                    "halts", "halt_id", r["halt_id"], reset_at=iso(now), reset_action_id=action
-                )
-            self._risk_event(now, "halt_reset", ",".join(rules), None, note, {"rebase": rebase})
-            if rebase:
-                self.store.insert(
-                    "equity_baselines",
-                    at=iso(now),
-                    equity=dec(self.store.equity_at(now, mid, self.cfg.pair)),
-                    reason=note,
-                    action_id=action,
-                )
+            self._apply_reset(now, rows, action, note, rebase, mid)
         return rules
+
+    def _apply_reset(
+        self, now: datetime, rows: list, action_id: int, note: str, rebase: bool, mid: Decimal
+    ) -> None:
+        """Close the given halts with the action that reset them, write ``halt_reset``
+        and, when asked, append a new drawdown baseline at the current equity (Q-6). The
+        only writer of ``halts`` resets (AD-17); used by the CLI path and the backtest."""
+        rules = [r["rule"] for r in rows]
+        for r in rows:
+            self.store.update(
+                "halts", "halt_id", r["halt_id"], reset_at=iso(now), reset_action_id=action_id
+            )
+        self._risk_event(now, "halt_reset", ",".join(rules), None, note, {"rebase": rebase})
+        if rebase:
+            self.store.insert(
+                "equity_baselines",
+                at=iso(now),
+                equity=dec(self.store.equity_at(now, mid, self.cfg.pair)),
+                reason=note,
+                action_id=action_id,
+            )
+
+    def _action_reset_halt(self, now: datetime, action, ticker: Ticker | None) -> str | None:  # noqa: ANN001
+        """``bot reset-halt <rule|all> --note [--rebase-baseline]`` (AD-12, Q-6): manual
+        only; the drawdown baseline moves only with ``--rebase-baseline`` and only when a
+        ``total_drawdown`` halt is among those reset (rebase_rules=("total_drawdown",))."""
+        rule = action["target_id"] or "all"
+        rows = self.store.all("SELECT halt_id, rule FROM halts WHERE reset_at IS NULL")
+        rows = [r for r in rows if rule == "all" or r["rule"] == rule]
+        if not rows:
+            return f"no active halt {rule}: nothing reset"
+        rebase = bool(action["rebase_baseline"]) and any(
+            r["rule"] == "total_drawdown" for r in rows
+        )
+        mid = Decimal(0)
+        if rebase:
+            if ticker is None:
+                try:
+                    ticker = self._read("get_ticker", self.broker.get_ticker, self.cfg.pair)
+                except (TransientReadError, RateLimited) as exc:
+                    self.error(now, "reset_halt", exc)
+                    return None  # retried on the next tick
+            mid = (ticker.bid + ticker.ask) / 2
+        with self.store.transaction():
+            self._apply_reset(now, rows, action["action_id"], action["note"], rebase, mid)
+        rules = ",".join(r["rule"] for r in rows)
+        return f"reset {rules}" + (" with a new drawdown baseline" if rebase else "")
+
+    def _action_flatten(self, now: datetime, action, ticker: Ticker | None) -> str | None:  # noqa: ANN001
+        """``bot flatten --note`` (AD-25): cancel and end any active intent
+        (``skipped_by_operator``), then open a flatten intent selling the full base,
+        referenced to the mid now. Its submissions are exempt from orders/day,
+        stale_candle and halt/kill, never from stale_ticker, price_sanity or minimums."""
+        if ticker is None:
+            return None  # applied on a tick, with a fresh ticker
+        active = self._active_intent()
+        if active is not None and active["is_flatten"]:
+            return "ignored: a flatten is already active"
+        if active is not None:
+            self._cancel_live(active, now)
+            if self._live_order(active["intent_id"]) is not None:
+                return None  # cancel not confirmed yet: retried on the next tick
+            why = f"flatten requested (operator action {action['action_id']})"
+            self._finish(active["intent_id"], now, "cancelled", "skipped_by_operator", why)
+        mid = (ticker.bid + ticker.ask) / 2
+        position = self.store.position(self.cfg.pair)
+        if not self._sellable_by_minimums(position, mid):
+            return f"nothing to flatten: position {position} below the exchange minimums"
+        with self.store.transaction():
+            intent_id = self.store.insert(
+                "intents",
+                source_action_id=action["action_id"],
+                is_flatten=1,
+                pair=self.cfg.pair,
+                side="sell",
+                reference_price=dec(mid),
+                target_qty=dec(position),
+                state="working",
+                approval_mode=self.cfg.approval,
+                window_end_at=iso(now + self.cfg.window),
+                created_at=iso(now),
+                updated_at=iso(now),
+            )
+        log.warning("flatten intent %s: sell %s %s", intent_id, position, self.cfg.pair)
+        return f"flatten intent {intent_id} opened: sell {position}"
 
     def _active_halts(self) -> tuple[str, ...]:
         rows = self.store.all("SELECT rule FROM halts WHERE reset_at IS NULL ORDER BY halt_id")
@@ -704,6 +777,8 @@ class Engine:
                 result = f"ignored: {action['kind']} is not supported"
             else:
                 result = handler(now, action, ticker)
+            if result is None:
+                continue  # not applicable yet: retried on the next tick
             with self.store.transaction():
                 self.store.execute(
                     "UPDATE operator_actions SET consumed_at = ?, result = ? "
@@ -1444,6 +1519,8 @@ class Engine:
             position = self.store.position(self.cfg.pair)
             if completing:
                 sized = completion_qty(position, price, self.rules, self.limits)
+            elif intent["is_flatten"]:
+                sized = self._size("sell", Decimal(0), price, now, mid)  # full base (AD-25)
             else:
                 target = Decimal(
                     self.store.one(
@@ -1469,7 +1546,9 @@ class Engine:
                 self._finish(intent_id, now, "done", outcome, sized.reason)
                 return
             cl = self._new_id()
-            proposed = ProposedOrder(intent_id, attempt, False, side, sized, price, cl)
+            proposed = ProposedOrder(
+                intent_id, attempt, bool(intent["is_flatten"]), side, sized, price, cl
+            )
             ctx = self._risk_context(now, ticker, Decimal(intent["reference_price"]), intent_id)
             decision = check_order(proposed, ctx, self.limits)
             if not decision.approved:
