@@ -31,3 +31,6 @@ KILL_SWITCH
 
 # Local tooling
 .claude/settings.local.json
+
+# Claude Code agent worktrees (local tooling)
+.claude/worktrees/
