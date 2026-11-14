@@ -84,6 +84,7 @@ TRANSITIONS: dict[str, frozenset[str]] = {
 
 
 UNKNOWN_POLL = timedelta(seconds=10)  # AD-8 find_order cadence for an unknown order
+RETENTION_DAYS = 30  # api_calls, heartbeats, risk_snapshots (architecture "Deferred")
 READ_RETRIES = 3  # AD-8: a failed read is retried at most 3 times, then logged
 _UNSET = object()
 
@@ -124,6 +125,7 @@ class EngineConfig:
     fill_settle_timeout: timedelta = timedelta(seconds=60)  # AD-27
     unknown_grace: timedelta = timedelta(seconds=60)  # AD-8: unknown -> not_found after this
     exec_timeframe: str = "15m"  # AD-6 execution candles (exchange-halt detection, F-5)
+    risk_snapshots: bool = True  # per-tick risk_snapshots rows (the backtest turns them off)
 
 
 @dataclass(frozen=True)
@@ -258,12 +260,14 @@ class Engine:
             self._advance_flatten(now, ticker)  # the only sell while stopped (AD-25)
             if not first_of_day:
                 self._snapshot(now, mid, False)
+            self._risk_snapshot(now, ticker)
             return TickResult(halted=True, signal_evaluated=False)
 
         self._advance_intent(now, ticker)
         evaluated = self._maybe_signal(now, ticker)
         if not first_of_day:
             self._snapshot(now, mid, False)
+        self._risk_snapshot(now, ticker)
         return TickResult(halted=False, signal_evaluated=evaluated)
 
     # --- equity, halts ------------------------------------------------------------------
@@ -304,6 +308,75 @@ class Engine:
             buy_hold_equity=dec(initial * mid / start_px),
             is_day_open=int(day_open),
         )
+
+    def _risk_snapshot(self, now: datetime, ticker: Ticker) -> None:
+        """Per-tick risk context and limit usage for the dashboard (AD-11, AD-17: the
+        dashboard reads this and never recomputes risk). Off in the backtest (speed)."""
+        if not self.cfg.risk_snapshots:
+            return
+        intent = self._active_intent()
+        reference = Decimal(intent["reference_price"]) if intent else (ticker.bid + ticker.ask) / 2
+        ctx = self._risk_context(now, ticker, reference, intent["intent_id"] if intent else None)
+        lim = self.limits
+        day_open = self._day_open_equity(now)
+        baseline = self._baseline()
+        cap = min(lim.max_position_fraction * ctx.equity, lim.max_position_abs_quote)
+        usage = {
+            "orders_today": [ctx.intents_today, lim.max_order_intents_per_day],
+            "submissions_today": [ctx.submissions_today, lim.max_exchange_submissions_per_day],
+            "intent_submissions": [ctx.intent_submissions, lim.max_submissions_per_intent],
+            "position_quote": [str((ctx.position_qty + ctx.resting_buy_qty) * ctx.mid), str(cap)],
+            "daily_loss": [str(ctx.equity), str((1 - lim.max_daily_loss_fraction) * day_open)],
+            "total_drawdown": [
+                str(ctx.equity),
+                str((1 - lim.max_total_drawdown_fraction) * baseline),
+            ],
+            "ticker_age_s": [(now - ctx.ticker_ts).total_seconds(), lim.stale_ticker_seconds],
+            "candle_age_s": [
+                None
+                if ctx.last_candle_open_at is None
+                else (now - ctx.last_candle_open_at).total_seconds(),
+                lim.stale_candle_intervals * ctx.candle_interval.total_seconds(),
+            ],
+            "price_vs_reference": [
+                str(abs(ctx.mid - reference) / reference),
+                str(lim.price_sanity_fraction),
+            ],
+        }
+        context = {
+            "equity": str(ctx.equity),
+            "day_open_equity": str(day_open),
+            "baseline_equity": str(baseline),
+            "position_qty": str(ctx.position_qty),
+            "resting_buy_qty": str(ctx.resting_buy_qty),
+            "mid": str(ctx.mid),
+            "reference_price": str(reference),
+            "active_halts": list(ctx.active_halts),
+            "kill_switch_engaged": ctx.kill_switch_engaged,
+            "market_status": ctx.market_status,
+            "last_candle_synthetic": ctx.last_candle_synthetic,
+            "limits_hash": self.cfg.limits_hash,
+        }
+        self.store.execute(
+            "INSERT OR REPLACE INTO risk_snapshots (at, context_json, usage_json) VALUES (?, ?, ?)",
+            (iso(now), json.dumps(context, sort_keys=True), json.dumps(usage, sort_keys=True)),
+        )
+
+    def housekeeping(self, now: datetime, backups_dir: Path, keep: int = 30) -> Path:
+        """Daily: prune health tables to 30 days and back the store up (architecture §2:
+        the store holds the only full copy of the tax ledger), keeping ``keep`` copies."""
+        cutoff = iso(now - timedelta(days=RETENTION_DAYS))
+        with self.store.transaction():
+            for table in ("api_calls", "heartbeats", "risk_snapshots"):
+                self.store.execute(f"DELETE FROM {table} WHERE at < ?", (cutoff,))  # noqa: S608
+        stem = f"{self.cfg.mode}-{self.strategy.id}"
+        target = Path(backups_dir) / f"{stem}-{now.strftime('%Y%m%d')}.sqlite"
+        self.store.backup(target)
+        copies = sorted(Path(backups_dir).glob(f"{stem}-????????.sqlite"))
+        for old in copies[:-keep]:
+            old.unlink(missing_ok=True)
+        log.info("daily housekeeping: pruned before %s, backup %s", cutoff, target)
+        return target
 
     def _day_open_equity(self, now: datetime) -> Decimal:
         row = self.store.one(
@@ -530,7 +603,7 @@ class Engine:
         self, now: datetime, component: str, exc: BaseException, tb: str | None = None
     ) -> None:
         """Record an error, redacted before insert (AD-22)."""
-        log.warning("%s error: %s: %s", component, type(exc).__name__, exc)
+        log.warning("%s error: %s: %s", component, type(exc).__name__, redact(str(exc)))
         self.store.insert(
             "errors",
             at=iso(now),

@@ -102,6 +102,19 @@ class Store:
     def close(self) -> None:
         self._conn.close()
 
+    def backup(self, target: Path) -> None:
+        """Online copy of the whole database to ``target`` (sqlite3 backup API), written
+        to a temporary file first and then renamed, so a copy is never half-written."""
+        target = Path(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".tmp")
+        dst = sqlite3.connect(str(tmp))
+        try:
+            self._conn.backup(dst)
+        finally:
+            dst.close()
+        tmp.replace(target)
+
     def _has_table(self, name: str) -> bool:
         row = self._conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)

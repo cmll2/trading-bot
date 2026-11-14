@@ -273,6 +273,7 @@ def backtest_engine_config(
         limits_hash=limits_hash(settings),
         pricing="passive" if variant == "maker" else "aggressive",
         fill_settle_timeout=timedelta(seconds=settings.execution.fill_settle_timeout_seconds),
+        risk_snapshots=False,  # dashboard data; the backtest report does not use them
     )
 
 

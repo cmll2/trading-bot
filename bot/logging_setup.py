@@ -25,12 +25,12 @@ from pathlib import Path
 
 REDACTED = "***REDACTED***"
 _SECRETS: set[str] = set()
+# name, then a separator (``: ``, ``=``, ``='``, ``": "`` ...), then the value.
+_SEP = r"(['\"]?\s*[:=]\s*(?:Bearer\s+|Basic\s+)?['\"]?)"
 _PATTERNS = (
+    re.compile(r"(?i)(api[-_]?key|api[-_]?sign|authorization)" + _SEP + r"([^\s'\",}]+)"),
     re.compile(
-        r"(?i)(api[-_]?key|api[-_]?sign|authorization)(\s*[:=]\s*|['\"]\s*:\s*['\"])([^\s'\",}]+)"
-    ),
-    re.compile(
-        r"(?i)\b(secret|password|passwd|token|private[-_]?key)(\s*[:=]\s*|['\"]\s*:\s*['\"])([^\s'\",}]+)"
+        r"(?i)\b(secret|password|passwd|token|private[-_]?key|nonce)" + _SEP + r"([^\s'\",}]+)"
     ),
 )
 

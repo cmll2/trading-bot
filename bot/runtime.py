@@ -427,6 +427,7 @@ def run_loop(
             dry.strategy_id, dry.approval, dry.db_path, engine.run_id, offset,
         )  # fmt: skip
         last_check = last_tick = clock.now()
+        last_housekeeping = None  # the first tick backs up and prunes, then once per UTC day
         while not stop.check():
             if max_ticks is not None and ticks >= max_ticks:
                 stop.set("max ticks reached")
@@ -445,6 +446,9 @@ def run_loop(
             _tick_once(engine, now)
             ticks += 1
             last_tick = now
+            if now.date() != last_housekeeping:
+                last_housekeeping = now.date()
+                _housekeeping(dry, now)
         reason = stop.reason or "stopped"
         engine.heartbeat(clock.now(), "stopped")
         engine.stop(f"graceful stop: {reason}")
@@ -486,6 +490,13 @@ def _startup(dry: DryRun, stop: StopFlag, lock: EngineLock, skew, on_start) -> f
     engine.recover(clock.now())
     engine.reconcile(clock.now())
     return offset
+
+
+def _housekeeping(dry: DryRun, now: datetime) -> None:
+    try:
+        dry.engine.housekeeping(now, Path(dry.settings.paths.var_dir) / "backups")
+    except OSError as exc:
+        dry.engine.error(now, "housekeeping", exc)
 
 
 def _tick_once(engine: Engine, now: datetime) -> None:
