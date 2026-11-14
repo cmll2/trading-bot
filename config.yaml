@@ -90,6 +90,16 @@ data:
 paths:
   var_dir: var
 
+# Plumbing strategy (FR-09, AD-30): DRY-RUN ONLY, no edge claimed. Exercises order handling,
+# restarts and the dashboard on its own store var/state/dry-run-plumbing.sqlite. Hourly
+# candles; holds target_pct % of equity, then nothing, switching every flip_hours hours.
+plumbing:
+  flip_hours: 2
+  target_pct: 50
+  window_minutes: 45                # <= its 1h timeframe (AD-5)
+  reprice_interval_minutes: 15
+  completion_window_minutes: 60
+
 # ---------------------------------------------------------------------------------------
 # PROTECTED (SAF-04): change only on the operator's explicit request, in a commit that
 # touches nothing else. Loaded read-only into bot.risk.limits.RiskLimits (frozen, SAF-05).

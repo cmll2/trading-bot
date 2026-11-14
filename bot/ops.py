@@ -69,7 +69,9 @@ def status(db: Path, now: datetime, tick_seconds: int, kill_path: Path, pid_aliv
 def _status(store, db, now, tick_seconds, kill_path, pid_alive):  # noqa: ANN001, ANN202
     mode = store.get_meta("mode") or "?"
     label = "LIVE" if mode == "live" else f"{mode.upper()} (SIMULATED)"
-    out = [f"MODE: {label}   strategy={store.get_meta('strategy_id')}   store={db}"]
+    sid = store.get_meta("strategy_id")
+    tag = " (plumbing - no edge)" if sid == "plumbing" else ""
+    out = [f"MODE: {label}   strategy={sid}{tag}   store={db}"]
     run = store.one("SELECT * FROM runs ORDER BY run_id DESC")
     healthy = False
     if run is None:

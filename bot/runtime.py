@@ -421,10 +421,12 @@ def run_loop(
             # The exchange cannot be reached at startup: refuse (a supervisor retries);
             # this is not a fault of the bot's state, so no halt is written.
             raise StartRefused(f"public market data unreachable at startup: {exc}") from exc
+        label = getattr(engine.strategy, "label", None)
         log.info(
-            "dry-run running: strategy=%s approval=%s store=%s run_id=%s clock_skew=%+.2fs "
+            "dry-run running: strategy=%s%s approval=%s store=%s run_id=%s clock_skew=%+.2fs "
             "(SIMULATED: paper broker, public data only)",
-            dry.strategy_id, dry.approval, dry.db_path, engine.run_id, offset,
+            dry.strategy_id, f" ({label})" if label else "", dry.approval, dry.db_path,
+            engine.run_id, offset,
         )  # fmt: skip
         last_check = last_tick = clock.now()
         last_housekeeping = None  # the first tick backs up and prunes, then once per UTC day

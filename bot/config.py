@@ -162,6 +162,23 @@ class PathSettings(_Frozen):
     var_dir: Path
 
 
+class PlumbingSettings(_Frozen):
+    """Dry-run-only plumbing strategy (FR-09, AD-30): hourly candles, its own execution
+    timings (window <= its 1h timeframe, AD-5). No edge is claimed."""
+
+    flip_hours: int = Field(ge=1, le=24)
+    target_pct: int = Field(gt=0, le=100)
+    window_minutes: int = Field(gt=0, le=60)
+    reprice_interval_minutes: int = Field(gt=0, le=60)
+    completion_window_minutes: int = Field(gt=0, le=1440)
+
+    @model_validator(mode="after")
+    def _fits(self) -> PlumbingSettings:
+        if self.reprice_interval_minutes > self.window_minutes:
+            raise ValueError("plumbing.reprice_interval_minutes must fit in its window")
+        return self
+
+
 class Settings(_Frozen):
     """All configuration. Frozen; built only by ``load_settings``."""
 
@@ -178,6 +195,7 @@ class Settings(_Frozen):
     review: ReviewSettings
     data: DataSettings
     paths: PathSettings
+    plumbing: PlumbingSettings
     risk: RiskLimits
     secrets_file: Path | None = None  # path only; the file is never read here
 
