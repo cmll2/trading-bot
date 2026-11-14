@@ -14,21 +14,33 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $sup = Join-Path $PSScriptRoot "supervise.ps1"
-$lock = Join-Path $root "var\state\dry-run-$Strategy.sqlite.lock"
+$state = Join-Path $root "var\state"
+$lock = Join-Path $state "dry-run-$Strategy.sqlite.lock"
+$stopFile = Join-Path $state "dry-run-$Strategy.sqlite.stop"
 New-Item -ItemType Directory -Force (Join-Path $root "var\logs") | Out-Null
 
+$running = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+    Where-Object { $_.CommandLine -like "*supervise.ps1*-Strategy $Strategy *" }
+if ($running) {
+    Write-Output "REFUSED: a supervisor for $Strategy is already running (PID $($running.ProcessId -join ', '))"
+    exit 2
+}
+if (Test-Path $stopFile) { Remove-Item $stopFile -Force }  # a stale stop request
+
+$startUtc = (Get-Date).ToUniversalTime()
 $cmdLine = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden " +
     "-File `"$sup`" -Strategy $Strategy -Approval $Approval"
 $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create `
     -Arguments @{ CommandLine = $cmdLine; CurrentDirectory = $root }
 if ($r.ReturnValue -ne 0) { throw "Win32_Process.Create failed with code $($r.ReturnValue)" }
-$startedUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-Write-Output "supervisor started: PID $($r.ProcessId) at $startedUtc (strategy=$Strategy approval=$Approval)"
+Write-Output ("supervisor started: PID $($r.ProcessId) at " + $startUtc.ToString("yyyy-MM-ddTHH:mm:ssZ") +
+    " (strategy=$Strategy approval=$Approval)")
 
-# The engine (python) writes its PID into the store lock once it has started.
+# The engine (python) writes its PID into the store lock once it has started; only a lock
+# written after this start counts (a stale lock from a killed engine is ignored).
 for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Seconds 2
-    if (Test-Path $lock) {
+    if ((Test-Path $lock) -and ((Get-Item $lock).LastWriteTimeUtc -ge $startUtc.AddSeconds(-1))) {
         $enginePid = (Get-Content $lock -Raw).Trim()
         if ($enginePid) {
             Write-Output "engine started: PID $enginePid (lock $lock)"
@@ -36,5 +48,5 @@ for ($i = 0; $i -lt 30; $i++) {
         }
     }
 }
-Write-Output "engine lock not seen after 60 s: check var\logs\dry-run-$Strategy.console.log and .supervisor.log"
+Write-Output "engine lock not seen after 60 s: check var\logs\dry-run-$Strategy.supervisor.log and the console logs"
 exit 1

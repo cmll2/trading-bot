@@ -2,8 +2,14 @@
 #
 # Runs `python -m bot.cli dry-run --strategy <S> --approval <A>` and restarts it when it
 # exits with a non-zero code (crash, forced kill, network down at startup), with a backoff
-# of 10 s doubling up to 5 min (reset after a run of more than 10 min). Exit code 0 means a
-# graceful stop (`bot stop`, CTRL+C): the supervisor then exits too.
+# of 10 s doubling up to 5 min (reset after a run of more than 10 min).
+#
+# The supervisor EXITS (no restart) when:
+#   - the engine exits with code 0 (graceful stop: `bot stop`, CTRL+C);
+#   - the engine exits with code 6 (another live engine holds the store lock: never loop
+#     against a running engine);
+#   - a stop file is found before a (re)start (`bot stop` sent while the engine was down);
+#     the file is removed.
 #
 # DRY-RUN ONLY: there is no live option here. Restarting is always safe (AD-7, AD-8, AD-9):
 # the engine re-takes its lock, recovers in-flight orders and reconciles before trading.
@@ -16,8 +22,8 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $py = Join-Path $root ".venv\Scripts\python.exe"
 $logs = Join-Path $root "var\logs"
+$stopFile = Join-Path $root "var\state\dry-run-$Strategy.sqlite.stop"
 New-Item -ItemType Directory -Force $logs | Out-Null
-$console = Join-Path $logs "dry-run-$Strategy.console.log"
 $supLog = Join-Path $logs "dry-run-$Strategy.supervisor.log"
 
 function Write-SupLog([string]$msg) {
@@ -28,14 +34,27 @@ function Write-SupLog([string]$msg) {
 Set-Location $root
 $delay = 10
 while ($true) {
+    if (Test-Path $stopFile) {
+        Remove-Item $stopFile -Force
+        Write-SupLog "stop requested while the engine was down: supervisor exits"
+        break
+    }
     $started = Get-Date
+    $stamp = $started.ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
+    $out = Join-Path $logs "dry-run-$Strategy-console-$stamp.out.log"
+    $err = Join-Path $logs "dry-run-$Strategy-console-$stamp.err.log"
     Write-SupLog "starting engine: strategy=$Strategy approval=$Approval (DRY-RUN, SIMULATED)"
-    $cmd = "`"$py`" -m bot.cli dry-run --strategy $Strategy --approval $Approval 1>>`"$console`" 2>&1"
-    cmd.exe /d /s /c "`"$cmd`""
-    $code = $LASTEXITCODE
-    Write-SupLog "engine exited with code $code"
+    $p = Start-Process -FilePath $py -WorkingDirectory $root -NoNewWindow -Wait -PassThru `
+        -ArgumentList @("-m", "bot.cli", "dry-run", "--strategy", $Strategy, "--approval", $Approval) `
+        -RedirectStandardOutput $out -RedirectStandardError $err
+    $code = $p.ExitCode
+    Write-SupLog "engine pid=$($p.Id) exited with code $code"
     if ($code -eq 0) {
         Write-SupLog "graceful stop: supervisor exits"
+        break
+    }
+    if ($code -eq 6) {
+        Write-SupLog "another engine holds the store lock: supervisor exits (no loop)"
         break
     }
     if (((Get-Date) - $started).TotalMinutes -gt 10) { $delay = 10 }

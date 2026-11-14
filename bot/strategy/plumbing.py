@@ -4,7 +4,7 @@ It exists to generate enough simulated orders to exercise order handling (placem
 re-pricing, fills, window ends, completion), restarts and the dashboard. Its decisions are
 deliberately meaningless: on hourly candles it alternates between holding ``target_pct``
 percent of equity and holding nothing, switching every ``flip_hours`` hours of candle open
-time. Every output it produces is labelled ``plumbing - no edge`` and SIMULATED.
+time. Every output it produces is labelled ``plumbing — no edge`` and SIMULATED.
 
 It must be impossible to run in live: it is absent from ``registry.LIVE_STRATEGIES`` and
 ``"live"`` is not in its ``allowed_modes`` (checked by the registry and the live gate). It
@@ -19,7 +19,7 @@ from decimal import Decimal
 from bot.candles import CandleHistory
 from bot.strategy.base import Mode, TargetPosition
 
-LABEL = "plumbing - no edge"
+LABEL = "plumbing — no edge"
 _HOUR_MS = 3_600_000
 
 

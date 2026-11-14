@@ -50,10 +50,10 @@ def test_plumbing_cannot_start_live_even_with_both_gates(tmp_path) -> None:
 def test_plumbing_alternates_every_flip_hours_and_claims_no_edge() -> None:
     s = Plumbing({"flip_hours": 2, "target_pct": 50})
     targets = [s.on_candle(_hist([h])) for h in range(6)]
-    # 2026-11-14 00:00 is hour 493,512 since the epoch: an even 2-hour block
+    # 2026-11-14 00:00 is hour 498,504 since the epoch: an even 2-hour block
     assert targets == [Decimal("0.5"), Decimal("0.5"), 0, 0, Decimal("0.5"), Decimal("0.5")]
     assert s.indicators(_hist([0]))["no_edge"] == 1.0
-    assert s.label == LABEL == "plumbing - no edge"
+    assert s.label == LABEL == "plumbing — no edge"
 
 
 def test_plumbing_dry_run_produces_several_orders_on_its_own_store(tmp_path) -> None:
@@ -70,7 +70,7 @@ def test_plumbing_dry_run_produces_several_orders_on_its_own_store(tmp_path) -> 
     assert {r[0] for r in st.all("SELECT strategy_id FROM signals")} == {"plumbing"}
     assert not (tmp_path / "var" / "state" / "dry-run-v0_trend.sqlite").exists()
     status = ops.status(dry.db_path, clock.now(), 30, tmp_path / "KILL")
-    assert "plumbing - no edge" in status.lines[0] and "SIMULATED" in status.lines[0]
+    assert "plumbing — no edge" in status.lines[0] and "SIMULATED" in status.lines[0]
 
 
 def test_plumbing_execution_window_fits_its_timeframe(tmp_path) -> None:

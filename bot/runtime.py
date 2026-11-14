@@ -55,10 +55,12 @@ log = logging.getLogger("bot.runtime")
 MAX_CLOCK_SKEW = timedelta(seconds=5)  # AD-2
 CHECK_EVERY = timedelta(hours=1)  # AD-2 skew re-check and AD-9 reconciliation
 SLEEP_GAP = timedelta(minutes=10)  # AD-29: a longer gap between ticks re-runs reconcile
+TICK_OFFSET = timedelta(seconds=15)  # > CcxtMarketData.CLOSE_SETTLE (10 s)
 
 EXIT_OK = 0
 EXIT_FATAL = 1
 EXIT_REFUSED = 2
+EXIT_LOCKED = 6  # another live engine holds the store lock: a supervisor must not loop
 
 
 class StartRefused(RuntimeError):
@@ -364,6 +366,10 @@ class StopFlag:
             self.set(f"stop file {self.stop_file.name}")
         return self.reason is not None
 
+    def consume(self) -> None:
+        if self.stop_file is not None and self.reason and self.reason.startswith("stop file"):
+            self.stop_file.unlink(missing_ok=True)
+
     def install_signal_handlers(self) -> None:
         def _handler(signum: int, _frame: object) -> None:
             self.set(f"signal {signal.Signals(signum).name}")
@@ -376,8 +382,14 @@ class StopFlag:
 
 
 def _next_tick(now: datetime, step: timedelta) -> datetime:
+    """The next tick on the ``step`` grid shifted by ``TICK_OFFSET``: a tick never lands
+    exactly on a candle boundary, so a candle that has just closed is settled
+    (``CcxtMarketData`` waits ``CLOSE_SETTLE``) before the tick that may end a window on it
+    (review finding: at an exact boundary the last eligible candle was not visible yet and
+    the order was cancelled unfilled, unlike the backtest)."""
     epoch = datetime(1970, 1, 1, tzinfo=UTC)
-    return epoch + ((now - epoch) // step + 1) * step
+    base = now - TICK_OFFSET
+    return epoch + ((base - epoch) // step + 1) * step + TICK_OFFSET
 
 
 def _sleep_until(clock: Clock, t: datetime, stop: StopFlag) -> None:
@@ -452,6 +464,7 @@ def run_loop(
                 last_housekeeping = now.date()
                 _housekeeping(dry, now)
         reason = stop.reason or "stopped"
+        stop.consume()  # the stop request is honoured: remove its file
         engine.heartbeat(clock.now(), "stopped")
         engine.stop(f"graceful stop: {reason}")
         log.info("dry-run stopped gracefully: %s", reason)
@@ -483,8 +496,9 @@ def _startup(dry: DryRun, stop: StopFlag, lock: EngineLock, skew, on_start) -> f
             f"local clock differs from Kraken server time by {offset:+.1f} s "
             f"(> {MAX_CLOCK_SKEW.total_seconds():.0f} s): fix the system clock (AD-2)"
         )
-    if stop.stop_file is not None:
-        stop.stop_file.unlink(missing_ok=True)  # an old stop request never blocks a start
+    # A stop file present now is honoured on the first loop check (a stop requested while
+    # the engine was starting is never lost); start-dry-run.ps1 / supervise.ps1 clear a
+    # stale one before launching (review finding).
     engine.start(pid=lock.pid)
     if on_start is not None:
         on_start.run_id = engine.run_id

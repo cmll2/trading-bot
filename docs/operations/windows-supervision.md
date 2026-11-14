@@ -9,8 +9,9 @@ side by side, each on its own store and lock:
 | v0 (daily trend) | `var/state/dry-run-v0_trend.sqlite` | `var/logs/dry-run-v0_trend.log` |
 | plumbing (hourly, no edge, dry-run only) | `var/state/dry-run-plumbing.sqlite` | `var/logs/dry-run-plumbing.log` |
 
-Each engine also writes `var/logs/dry-run-<strategy>.console.log` (stdout/stderr) and, when
-started through the supervisor, `var/logs/dry-run-<strategy>.supervisor.log`. Daily store
+When started through the supervisor, each engine start also gets
+`var/logs/dry-run-<strategy>-console-<UTC stamp>.out.log` / `.err.log` (stdout/stderr) and
+the supervisor writes `var/logs/dry-run-<strategy>.supervisor.log` (starts, exits, restarts). Daily store
 backups go to `var/backups/` (30 kept). `var/` is gitignored.
 
 All commands below run from the repository root in PowerShell.
@@ -24,7 +25,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-dry-run.ps1 -S
 
 The script creates the supervisor (`scripts\supervise.ps1`) through WMI, so it is not a child
 of your shell and keeps running when the shell closes. It prints the supervisor PID and,
-once the engine has taken its lock, the engine (python) PID. `-Approval autonomous` is the
+once the engine has taken its lock (a lock written after this start), the engine (python)
+PID. It refuses to start a second supervisor for the same strategy, and removes a stale
+stop file first. `-Approval autonomous` is the
 default of these scripts, because nobody is there to approve an unattended run;
 `config.yaml` keeps `execution.approval: manual` for the first live weeks. The override is
 logged at start (`execution.approval overridden for this dry-run session`).
@@ -51,7 +54,8 @@ would-have-returned estimate for untraded signals).
 Get-Content var\logs\dry-run-v0_trend.log -Tail 20 -Wait          # JSON lines, redacted
 Get-Content var\logs\dry-run-plumbing.log -Tail 20 -Wait
 Get-Content var\logs\dry-run-v0_trend.supervisor.log -Tail 20      # starts, exits, restarts
-Get-Content var\logs\dry-run-v0_trend.console.log -Tail 50         # anything printed to stderr
+Get-ChildItem var\logs\dry-run-v0_trend-console-*.err.log | Sort-Object LastWriteTime |
+  Select-Object -Last 1 | Get-Content -Tail 50                        # stderr of the last start
 ```
 
 ## Stop (graceful)
@@ -62,9 +66,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\stop-dry-run.ps1 -St
 ```
 
 `bot stop` writes `var/state/dry-run-<strategy>.sqlite.stop`. The engine checks it every
-second between ticks, finishes the tick in progress, commits, records
-`runs.stop_reason = graceful stop: stop file ...`, releases its lock and exits with code 0;
-the supervisor then exits too. In a console window, CTRL+C or CTRL+BREAK do the same.
+second between ticks (and right after starting), finishes the tick in progress, commits,
+records `runs.stop_reason = graceful stop: stop file ...`, removes the stop file, releases
+its lock and exits with code 0; the supervisor then exits too. If the engine was down (the
+supervisor waiting to restart it), the supervisor finds the stop file before restarting,
+removes it and exits. `stop-dry-run.ps1` waits for both the lock and the supervisor to be
+gone. In a console window, CTRL+C or CTRL+BREAK do the same as `bot stop`.
 
 ## Forced restart (the M3 check: a forced restart must be survived)
 
@@ -75,8 +82,11 @@ $enginePid = Get-Content var\state\dry-run-v0_trend.sqlite.lock    # or the PID 
 Stop-Process -Id $enginePid -Force
 ```
 
-The supervisor logs `engine exited with code 1` (or `-1`) and starts the engine again after
-10 s. On start the engine takes over the stale lock (the PID is gone), then runs the AD-8
+The PID in the lock (and in `bot status`) is the Python interpreter running the engine;
+`.venv\Scripts\python.exe` is a small launcher whose child it is, and the launcher exits
+when the interpreter is killed (verified 2026-11-14: exit code -1). Kill the PID from the
+lock, not the launcher. The supervisor logs `engine ... exited with code -1` and starts the
+engine again after 10 s. On start the engine takes over the stale lock (the PID is gone), then runs the AD-8
 recovery (orders left `created` become `not_found`, `submitting` become `unknown` and are
 looked up in open AND closed orders for 60 s before anything is re-sent, fills are ingested
 once by trade id) and the AD-9 reconciliation (store vs paper account: open orders, base,
@@ -110,8 +120,12 @@ Stop-Process -Id <supervisor PID> -Force; Stop-Process -Id <engine PID> -Force
 `scripts\register-task.ps1 -Strategy v0_trend` (and again for `plumbing`) registers a task
 that starts `scripts\supervise.ps1` **at logon** with **restart on failure** (every minute,
 up to 999 times), no time limit, allowed on battery, one instance at a time. The supervisor
-restarts the engine after a crash with a 10 s to 5 min backoff; the task restarts the
-supervisor itself. Remove it with
+restarts the engine after a crash with a 10 s to 5 min backoff. Not verified: Task
+Scheduler's restart-on-failure is documented for a task that fails to start; whether it also
+restarts the supervisor when the supervisor itself exits with an error is uncertain, so check
+the task history after the first weeks. Do not also start the same strategy with
+`start-dry-run.ps1` while the task runs (a second engine exits with code 6 and its
+supervisor stops). Remove it with
 `Unregister-ScheduledTask -TaskName "trading-bot dry-run v0_trend" -Confirm:$false`.
 
 ## Sleep, hibernation, clock
@@ -137,4 +151,5 @@ Heartbeat gaps caused by sleep are visible in `heartbeats` and in `bot status`.
 |---|---|---|
 | 0 | graceful stop | exits |
 | 1 | fatal error or reconciliation mismatch (halt written, resting orders cancelled first) | restarts (the halt stays until `bot reset-halt`) |
-| 2 | start refused (lock held by a live engine, clock skew, public data unreachable) | restarts with backoff |
+| 2 | start refused (clock skew, public data unreachable, invalid config) | restarts with backoff |
+| 6 | another live engine holds the store lock | exits (never loops against a running engine) |

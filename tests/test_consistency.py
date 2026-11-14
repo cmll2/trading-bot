@@ -1,23 +1,31 @@
 """Story M3-9: the backtest and the paper broker produce the same trades on the same
 recorded data (FR-60, AD-6, BI-05; GL-02 depends on it).
 
-Two engines run in lockstep on the SAME inputs (``tests/fixtures/consistency/``: real
-Kraken 15m candles and bid/ask quotes derived from them, see ``make_fixture.py``):
+Two engines run in lockstep on the SAME inputs (``tests/fixtures/consistency/``): REAL
+Kraken 15m candles from the validated cache; 1h candles RESAMPLED from them (the plumbing
+strategy's timeframe); bid/ask quotes DERIVED from them by ``make_fixture.py`` (the mid
+moves toward the forming candle's close, i.e. within-candle look-ahead: acceptable here
+because both paths see identical quotes, never for evaluating a strategy).
 
-- backtest path: the backtest's adapters, as ``bot.backtest.runner.run_backtest`` wires
-  them: ``ReplayMarketData`` over the frames, ``PaperBroker`` with the recorded public
-  market snapshot, ``SimClock``, an in-memory store;
+- backtest path: the backtest's ADAPTERS (``ReplayMarketData`` over the frames,
+  ``PaperBroker`` with the recorded public market snapshot, maker liquidity, ``SimClock``,
+  an in-memory store) with the recorded quotes as ticker and the dry-run engine settings
+  (plumbing timings); ``run_backtest``'s own schedule, deterministic ids and taker variant
+  are NOT exercised here;
 - paper path: the dry-run wiring itself, ``bot.runtime.build_dry_run``: ``CcxtMarketData``
   and ``LiveFeed`` over a fake public exchange that serves the same candles and quotes,
   ``PaperBroker`` with live rules and ticker, a ``FakeClock``.
 
-Both use the plumbing strategy (many intents) and identical tick times. Fills, prices,
-fees, order states and journal outcomes must be identical. A perturbed quote must make
-them differ (the test is not vacuous).
+Both use the plumbing strategy (many intents) and tick on the dry-run loop's grid (30 s
+steps shifted by ``runtime.TICK_OFFSET`` = 15 s): every 60 s while an intent is active,
+else at each hourly close + 15 s. Fills, prices, fees, order states, journal outcomes and
+the recorded ``priced_from`` bid/ask must be identical. A perturbed quote must make them
+differ (the test is not vacuous).
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -178,6 +186,12 @@ def _trades(engine: Engine) -> dict[str, list[tuple]]:
         "orders": [tuple(r) for r in s.all(
             "SELECT created_at, attempt_no, side, qty, limit_price, state, filled_qty "
             "FROM orders ORDER BY order_id")],
+        "priced_from": [
+            tuple(sorted((k, v) for k, v in json.loads(r[0]).items() if k != "cl_ord_id"))
+            for r in s.all(
+                "SELECT detail_json FROM api_calls WHERE endpoint = 'priced_from' ORDER BY at"
+            )
+        ],
         "fills": [tuple(r) for r in s.all(
             "SELECT at, side, qty, price, fee, liquidity, slippage_bps FROM fills "
             "ORDER BY fill_id")],
@@ -206,8 +220,9 @@ def test_fixture_covers_enough_intents_with_a_reprice_and_a_not_filled(runs) -> 
 
 def test_backtest_and_paper_broker_produce_identical_trades(runs) -> None:  # noqa: ANN001
     _, _, _, bt, paper = runs
-    for key in ("fills", "orders", "intents", "signals"):
+    for key in ("fills", "orders", "intents", "signals", "priced_from"):
         assert paper[key] == bt[key], key
+    assert len(paper["priced_from"]) == len(paper["orders"])  # AD-6: every order recorded
 
 
 def test_a_perturbed_recorded_price_breaks_the_equality(runs) -> None:  # noqa: ANN001

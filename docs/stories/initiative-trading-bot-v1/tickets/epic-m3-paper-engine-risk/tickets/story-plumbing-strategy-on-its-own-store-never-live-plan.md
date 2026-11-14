@@ -28,10 +28,13 @@ live gate refuse it in live.
   candle closed, so nothing could ever fill (found by the story 9 consistency run): the
   re-price interval must span two execution candles.
 - Holds `target_pct` (50 %) of equity, then nothing, switching every `flip_hours` (2) hours
-  of candle open time: about 12 intents/day, under the protected 20/day backstop; 50 % keeps
+  of candle open time: about 12 intents/day when orders fill (an unfilled intent re-signals on
+  the next hourly candle, so a day can have more; the protected 20/day backstop then rejects
+  the excess, which also exercises that rule); 50 % keeps
   the fee drag (~2.7 %/day SIMULATED) below the daily-loss halt on its own.
 - `bot backtest --strategy plumbing` stays not implemented (dry-run exercise only).
-- Label `plumbing - no edge` on the strategy, the start log line and `bot status`;
+- Label `plumbing — no edge` on the strategy, the start log line, `bot status` and `bot
+  journal`; orders carry no per-row tag (the whole store is plumbing-only, AD-30);
   every mode label says SIMULATED.
 
 ## Verification

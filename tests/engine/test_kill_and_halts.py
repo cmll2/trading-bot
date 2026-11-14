@@ -141,6 +141,7 @@ def test_cli_kill_on_engages_and_off_only_records_an_action(tmp_path, monkeypatc
     kill = dry.settings.risk.kill_switch_path
     assert cli.main(["kill", "on", "--note", "test", *cfg], env={}) == cli.EXIT_OK
     assert kill.read_text(encoding="utf-8").startswith("source=cli at=")
+    clock.advance(timedelta(seconds=5))  # the operator disengages later (a tie keeps it on)
     assert cli.main(["kill", "off", "--note", "test", *cfg], env={}) == cli.EXIT_OK
     assert kill.exists()  # the CLI never deletes the file
     kinds = [

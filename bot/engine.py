@@ -1020,11 +1020,13 @@ class Engine:
         if not self._kill_path.exists():
             return "kill switch was not engaged"
         state = read_kill_switch(self._kill_path)
-        if state.at is not None:
-            written = datetime.strptime(state.at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-        else:  # a hand-made file: its modification time
+        try:
+            written = datetime.strptime(state.at or "", "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        except ValueError:  # hand-made file or malformed time: its modification time
             written = datetime.fromtimestamp(self._kill_path.stat().st_mtime, tz=UTC)
-        if written > parse_iso(action["at"]):
+        # The file time has whole seconds: compare against the request's second, so a tie
+        # keeps the switch (the safe side, review finding).
+        if written >= parse_iso(action["at"]).replace(microsecond=0):
             return "kept: the kill switch was engaged again after this kill off request"
         self._kill_path.unlink()
         self._log_kill_state(now, self._kill_switch())

@@ -85,12 +85,15 @@ def render(db: Path, limit: int = 30, fee: Decimal = Decimal("0.004")) -> list[s
     store = Store.open_readonly(db)
     try:
         mode = store.get_meta("mode") or "?"
+        sid = store.get_meta("strategy_id") or "?"
         data = rows(store, fee)
     finally:
         store.close()
     label = "LIVE" if mode == "live" else "SIMULATED"
+    if sid == "plumbing":
+        label += ", plumbing — no edge"
     lines = [
-        f"SIGNAL JOURNAL ({label}; would-have-returned is an estimate at the maker fee "
+        f"SIGNAL JOURNAL {sid} ({label}; would-have-returned is an estimate at the maker fee "
         f"{fee}, authoritative counterfactuals come from bot review)",
         f"{'candle_open_at':26} {'target':>6} {'price':>12} {'outcome':20} would-have-returned",
     ]

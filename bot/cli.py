@@ -548,7 +548,7 @@ def _dry_run_command(args: argparse.Namespace, settings: Settings, strategy_id: 
         lock.acquire()
     except runtime.StartRefused as exc:
         _err(f"REFUSED: {exc}")
-        return EXIT_REFUSED
+        return runtime.EXIT_LOCKED
     try:
         dry = runtime.build_dry_run(
             settings, strategy_id, _exchange_factory(), clock, approval=args.approval

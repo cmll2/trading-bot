@@ -25,10 +25,9 @@ def test_stop_request_mid_tick_finishes_the_tick_commits_and_releases_the_lock(
 
     def tick_then_signal():  # noqa: ANN202
         calls["n"] += 1
-        result = real_tick()
         if calls["n"] == 2:
-            stop.set("signal SIGINT")  # CTRL+C arrives while the tick is running
-        return result
+            stop.set("signal SIGINT")  # CTRL+C arrives as this tick starts running
+        return real_tick()  # ... and the tick still runs to completion
 
     monkeypatch.setattr(dry.engine, "tick", tick_then_signal)
     lock = EngineLock(lock_path(dry.db_path), pid=77)
@@ -126,3 +125,21 @@ def test_windows_supervision_doc_and_scripts_exist() -> None:
         Path(REPO_ROOT / "scripts" / "start-dry-run.ps1").read_text(encoding="utf-8").count("var")
         >= 1
     )
+
+
+def test_loop_ticks_never_land_on_a_candle_boundary() -> None:
+    """Review finding (stories 9-11): a window-end tick exactly on a 15m boundary could
+    not see the last eligible candle yet (CcxtMarketData settles 10 s) and cancelled the
+    order unfilled, unlike the backtest. Ticks are offset past the settle margin."""
+    from datetime import UTC, datetime
+
+    from bot.data.live import CLOSE_SETTLE
+    from bot.runtime import _next_tick  # noqa: PLC2701
+
+    t = datetime(2026, 11, 14, 0, 0, 0, tzinfo=UTC)
+    step = timedelta(seconds=30)
+    for _ in range(200):
+        t = _next_tick(t, step)
+        since_boundary = (t.minute % 15) * 60 + t.second
+        assert since_boundary % (15 * 60) >= CLOSE_SETTLE.total_seconds()
+        assert t.second in (15, 45)
