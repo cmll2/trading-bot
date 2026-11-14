@@ -526,7 +526,98 @@ class Engine:
             self.clock.sleep_until(min(now + UNKNOWN_POLL, since + self.cfg.unknown_grace))
 
     def reconcile(self, now: datetime) -> None:
-        """AD-9 reconciliation (story 3)."""
+        """AD-9: compare the store with the broker (the ``paper_*`` tables in dry-run) and
+        halt on any disagreement.
+
+        - open orders: the broker's open orders on the pair must be the store's open-like
+          orders, matched by ``cl_ord_id``; an order the bot did not create is a mismatch,
+          and so is a store order the store thinks is resting that the broker does not
+          list (``cancel_requested`` and ``unknown`` orders may legitimately be gone);
+        - base balance: broker free + locked must EXACTLY equal the derived position;
+        - quote balance: broker free + locked must be >= the derived cash (A-1);
+        - fills: every broker fill since the account start must match a store fill by
+          exchange trade id, and every store fill must exist at the broker.
+
+        On a mismatch: a ``reconcile_mismatch`` risk event with both sides, a
+        ``halts(reconcile_mismatch)`` row, both sides logged, the bot's own resting orders
+        cancelled (best effort), then ``ReconcileMismatch`` is raised so the process exits
+        non-zero (the runtime records ``stop_reason``)."""
+        pair = self.cfg.pair
+        problems: list[tuple[str, dict[str, object]]] = []
+        exch_open = {
+            o.cl_ord_id: o for o in self._read("get_open_orders", self.broker.get_open_orders, pair)
+        }
+        rows = self.store.all(
+            "SELECT cl_ord_id, state FROM orders "
+            "WHERE state IN ('open', 'partially_filled', 'cancel_requested', 'unknown')"
+        )
+        store_open = {r["cl_ord_id"]: r["state"] for r in rows}
+        for cl in sorted(set(exch_open) - set(store_open)):
+            problems.append(("open order at the broker unknown to the store", {"cl_ord_id": cl}))
+        for cl, state in sorted(store_open.items()):
+            if state in ("open", "partially_filled") and cl not in exch_open:
+                problems.append(
+                    (
+                        "store order resting but not open at the broker",
+                        {"cl_ord_id": cl, "state": state},
+                    )
+                )
+        balances = self._read("get_balance", self.broker.get_balance)
+        base_bal = balances.get(self.rules.base)
+        quote_bal = balances.get(self.rules.quote)
+        base = base_bal.free + base_bal.locked if base_bal else Decimal(0)
+        quote = quote_bal.free + quote_bal.locked if quote_bal else Decimal(0)
+        derived_base = self.store.position(pair)
+        derived_cash = self.store.cash()
+        if base != derived_base:
+            problems.append(
+                ("base balance differs from the derived position",
+                 {"broker": str(base), "store": str(derived_base)})
+            )  # fmt: skip
+        if quote < derived_cash:
+            problems.append(
+                ("quote balance below the derived cash",
+                 {"broker": str(quote), "store": str(derived_cash)})
+            )  # fmt: skip
+        since = parse_iso(self.store.get_meta("initial_at") or iso(now))
+        exch_fills = {
+            f.exchange_trade_id: f
+            for f in self._read("get_fills", self.broker.get_fills, pair, since)
+        }
+        store_fills = {
+            r["exchange_trade_id"]
+            for r in self.store.all(
+                "SELECT exchange_trade_id FROM fills WHERE exchange = ?", (self.broker.name,)
+            )
+        }
+        for tid in sorted(set(exch_fills) - store_fills):
+            f = exch_fills[tid]
+            problems.append(
+                ("broker fill matches no store fill",
+                 {"trade_id": tid, "cl_ord_id": f.cl_ord_id, "qty": str(f.qty)})
+            )  # fmt: skip
+        for tid in sorted(store_fills - set(exch_fills)):
+            problems.append(("store fill unknown to the broker", {"trade_id": tid}))
+        if not problems:
+            log.info(
+                "reconciliation OK: %d open orders, base %s, quote %s >= cash %s, %d fills",
+                len(exch_open), base, quote, derived_cash, len(exch_fills),
+            )  # fmt: skip
+            return
+        reason = "; ".join(f"{what} {detail}" for what, detail in problems)
+        with self.store.transaction():
+            for what, detail in problems:
+                self._risk_event(
+                    now, "reconcile_mismatch", "reconcile_mismatch", None, what, detail
+                )
+            self.store.execute(
+                "INSERT INTO halts (rule, triggered_at, reason) VALUES (?, ?, ?) "
+                "ON CONFLICT DO NOTHING",
+                ("reconcile_mismatch", iso(now), reason[:1000]),
+            )
+        log.error("RECONCILIATION MISMATCH: %s", reason)
+        self.cancel_all_resting(now)
+        raise ReconcileMismatch(reason)
 
     def _consume_actions(self, now: datetime, kinds: tuple[str, ...] | None = None) -> None:
         """Consume pending operator actions (stories 5 to 7)."""
