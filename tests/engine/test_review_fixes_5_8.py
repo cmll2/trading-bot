@@ -73,11 +73,11 @@ def test_kill_file_held_open_does_not_crash_and_is_retried(tmp_path, monkeypatch
     def locked(self, missing_ok=False):  # noqa: ANN001, ANN202
         raise PermissionError(32, "The process cannot access the file")
 
-    monkeypatch.setattr(Path, "unlink", locked)
-    env.tick()  # no exception
+    with pytest.MonkeyPatch.context() as mp:  # a local patch, not the network block
+        mp.setattr(Path, "unlink", locked)
+        env.tick()  # no exception
     assert env.store.one("SELECT consumed_at FROM operator_actions")[0] is None
     assert env.store.one("SELECT count(*) FROM errors WHERE component LIKE 'operator_action%'")[0]
-    monkeypatch.undo()
     env.tick()
     assert not env.kill_path.exists()
 
@@ -151,10 +151,9 @@ def test_manual_completion_intent_waits_for_its_own_approval(tmp_path) -> None:
 def test_cli_never_migrates_a_store(tmp_path, monkeypatch) -> None:
     env = FakeEnv(tmp_path)
     db = tmp_path / "engine.sqlite"
-    monkeypatch.setattr(store_mod, "SCHEMA_VERSION", store_mod.SCHEMA_VERSION + 1)
-    with pytest.raises(StoreError):
+    with pytest.MonkeyPatch.context() as mp, pytest.raises(StoreError):
+        mp.setattr(store_mod, "SCHEMA_VERSION", store_mod.SCHEMA_VERSION + 1)
         ops.write_action(db, env.clock.now(), "flatten", "n")
-    monkeypatch.undo()
     assert env.store.one("SELECT count(*) FROM operator_actions")[0] == 0
 
 
