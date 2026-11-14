@@ -636,7 +636,11 @@ def _operator_command(args: argparse.Namespace) -> int:
                 "This appends a NEW drawdown baseline at the current equity: the 25% total "
                 f"drawdown is then measured from it. Type {REBASE_CONFIRMATION} to confirm:"
             )
-            if input().strip() != REBASE_CONFIRMATION:
+            try:
+                answer = input().strip()
+            except EOFError:
+                answer = ""
+            if answer != REBASE_CONFIRMATION:
                 _err("REFUSED: confirmation not given; nothing written")
                 return EXIT_REFUSED
     elif args.command == "flatten":

@@ -213,8 +213,13 @@ def test_pending_signal_without_intent_is_resumed_while_its_window_is_open(tmp_p
             indicators_json="{}", outcome="pending",
         )  # fmt: skip
     env.restart()
+    # Review fix (stories 5-8): nothing is sent during recover(), before the halts and the
+    # startup reconciliation; the first tick re-evaluates the signal and sends the order.
+    assert env.broker.submitted == []
+    env.tick()
     assert len(env.intents()) == 1
     assert [o["state"] for o in env.orders()] == ["open"]
+    assert env.store.one("SELECT count(*) FROM signals")[0] == 1
 
 
 def test_pending_signal_whose_window_passed_ends_not_filled(tmp_path) -> None:

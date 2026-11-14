@@ -27,7 +27,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from pathlib import Path
 from typing import Literal
@@ -87,6 +87,7 @@ UNKNOWN_POLL = timedelta(seconds=10)  # AD-8 find_order cadence for an unknown o
 RETENTION_DAYS = 30  # api_calls, heartbeats, risk_snapshots (architecture "Deferred")
 READ_RETRIES = 3  # AD-8: a failed read is retried at most 3 times, then logged
 _UNSET = object()
+_PENDING = object()  # an operator action that must wait for a later tick
 
 
 class IllegalTransition(RuntimeError):
@@ -125,7 +126,7 @@ class EngineConfig:
     fill_settle_timeout: timedelta = timedelta(seconds=60)  # AD-27
     unknown_grace: timedelta = timedelta(seconds=60)  # AD-8: unknown -> not_found after this
     exec_timeframe: str = "15m"  # AD-6 execution candles (exchange-halt detection, F-5)
-    risk_snapshots: bool = True  # per-tick risk_snapshots rows (the backtest turns them off)
+    health_records: bool = True  # risk_snapshots + priced_from rows (the backtest: off)
 
 
 @dataclass(frozen=True)
@@ -241,8 +242,15 @@ class Engine:
             ticker = self.broker.get_ticker(self.cfg.pair)
         except (TransientReadError, RateLimited) as exc:
             self._error(now, "ticker", exc)
+            # AD-12 needs no ticker: apply operator actions (a flatten waits for a ticker)
+            # and stop on an engaged switch or a recorded halt even while blind.
+            self._consume_actions(now, ticker=None)
+            halts, killed = self._active_halts(), self._kill_switch()
+            self._log_kill_state(now, killed)
+            if halts or killed:
+                self._sweep(now, "kill switch" if killed else f"halt: {', '.join(halts)}")
             self._own_feed_blind(now)
-            return TickResult(halted=bool(self._active_halts()), signal_evaluated=False)
+            return TickResult(halted=bool(halts or killed), signal_evaluated=False)
         self._last_ticker_ok = ticker.ts
         mid = (ticker.bid + ticker.ask) / 2
         first_of_day = self._day_open(now, mid)
@@ -263,7 +271,11 @@ class Engine:
             self._risk_snapshot(now, ticker)
             return TickResult(halted=True, signal_evaluated=False)
 
-        self._advance_intent(now, ticker)
+        # A pending signal left by a crash is re-evaluated here, after the halts, the
+        # kill switch and the startup reconciliation, never inside recover() (review).
+        self._resume_pending_signals(now, ticker)
+        if not self._pending_flatten():  # a flatten waiting on a cancel freezes the intent
+            self._advance_intent(now, ticker)
         evaluated = self._maybe_signal(now, ticker)
         if not first_of_day:
             self._snapshot(now, mid, False)
@@ -312,7 +324,7 @@ class Engine:
     def _risk_snapshot(self, now: datetime, ticker: Ticker) -> None:
         """Per-tick risk context and limit usage for the dashboard (AD-11, AD-17: the
         dashboard reads this and never recomputes risk). Off in the backtest (speed)."""
-        if not self.cfg.risk_snapshots:
+        if not self.cfg.health_records:
             return
         intent = self._active_intent()
         reference = Decimal(intent["reference_price"]) if intent else (ticker.bid + ticker.ask) / 2
@@ -454,70 +466,6 @@ class Engine:
                 reason=note,
                 action_id=action_id,
             )
-
-    def _action_reset_halt(self, now: datetime, action, ticker: Ticker | None) -> str | None:  # noqa: ANN001
-        """``bot reset-halt <rule|all> --note [--rebase-baseline]`` (AD-12, Q-6): manual
-        only; the drawdown baseline moves only with ``--rebase-baseline`` and only when a
-        ``total_drawdown`` halt is among those reset (rebase_rules=("total_drawdown",))."""
-        rule = action["target_id"] or "all"
-        rows = self.store.all("SELECT halt_id, rule FROM halts WHERE reset_at IS NULL")
-        rows = [r for r in rows if rule == "all" or r["rule"] == rule]
-        if not rows:
-            return f"no active halt {rule}: nothing reset"
-        rebase = bool(action["rebase_baseline"]) and any(
-            r["rule"] == "total_drawdown" for r in rows
-        )
-        mid = Decimal(0)
-        if rebase:
-            if ticker is None:
-                try:
-                    ticker = self._read("get_ticker", self.broker.get_ticker, self.cfg.pair)
-                except (TransientReadError, RateLimited) as exc:
-                    self.error(now, "reset_halt", exc)
-                    return None  # retried on the next tick
-            mid = (ticker.bid + ticker.ask) / 2
-        with self.store.transaction():
-            self._apply_reset(now, rows, action["action_id"], action["note"], rebase, mid)
-        rules = ",".join(r["rule"] for r in rows)
-        return f"reset {rules}" + (" with a new drawdown baseline" if rebase else "")
-
-    def _action_flatten(self, now: datetime, action, ticker: Ticker | None) -> str | None:  # noqa: ANN001
-        """``bot flatten --note`` (AD-25): cancel and end any active intent
-        (``skipped_by_operator``), then open a flatten intent selling the full base,
-        referenced to the mid now. Its submissions are exempt from orders/day,
-        stale_candle and halt/kill, never from stale_ticker, price_sanity or minimums."""
-        if ticker is None:
-            return None  # applied on a tick, with a fresh ticker
-        active = self._active_intent()
-        if active is not None and active["is_flatten"]:
-            return "ignored: a flatten is already active"
-        if active is not None:
-            self._cancel_live(active, now)
-            if self._live_order(active["intent_id"]) is not None:
-                return None  # cancel not confirmed yet: retried on the next tick
-            why = f"flatten requested (operator action {action['action_id']})"
-            self._finish(active["intent_id"], now, "cancelled", "skipped_by_operator", why)
-        mid = (ticker.bid + ticker.ask) / 2
-        position = self.store.position(self.cfg.pair)
-        if not self._sellable_by_minimums(position, mid):
-            return f"nothing to flatten: position {position} below the exchange minimums"
-        with self.store.transaction():
-            intent_id = self.store.insert(
-                "intents",
-                source_action_id=action["action_id"],
-                is_flatten=1,
-                pair=self.cfg.pair,
-                side="sell",
-                reference_price=dec(mid),
-                target_qty=dec(position),
-                state="working",
-                approval_mode=self.cfg.approval,
-                window_end_at=iso(now + self.cfg.window),
-                created_at=iso(now),
-                updated_at=iso(now),
-            )
-        log.warning("flatten intent %s: sell %s %s", intent_id, position, self.cfg.pair)
-        return f"flatten intent {intent_id} opened: sell {position}"
 
     def _active_halts(self) -> tuple[str, ...]:
         rows = self.store.all("SELECT rule FROM halts WHERE reset_at IS NULL ORDER BY halt_id")
@@ -695,9 +643,13 @@ class Engine:
                 self._resolve_unknown(order)
             else:
                 self._sync_order(order, self.clock.now())
-        self._resume_pending_signals(self.clock.now())
+        self._resume_pending_signals(self.clock.now(), None)
 
-    def _resume_pending_signals(self, now: datetime) -> None:
+    def _resume_pending_signals(self, now: datetime, ticker: Ticker | None) -> None:
+        """AD-28: a ``pending`` signal without an intent (a crash between journaling and
+        deciding) ends ``not_filled`` / ``restart_window_passed`` if its window passed; with
+        a ticker (on a tick, after halts and reconciliation) an open one is re-evaluated
+        through the same path as a fresh signal."""
         rows = self.store.all(
             "SELECT s.* FROM signals s LEFT JOIN intents i ON i.signal_id = s.signal_id "
             "WHERE s.outcome = 'pending' AND i.intent_id IS NULL ORDER BY s.candle_open_at"
@@ -709,7 +661,8 @@ class Engine:
                 with self.store.transaction():
                     self._set_outcome(sig["signal_id"], "not_filled", "restart_window_passed")
                 continue
-            ticker = self._read("get_ticker", self.broker.get_ticker, self.cfg.pair)
+            if ticker is None:
+                continue
             # Network reads before the AD-28 transaction, never inside it.
             self.md.closed_candles(self.cfg.pair, self.cfg.timeframe, limit=1)
             self._rules = self.broker.load_market(self.cfg.pair)
@@ -869,30 +822,141 @@ class Engine:
         self, now: datetime, kinds: tuple[str, ...] | None = None, ticker: Ticker | None = None
     ) -> None:
         """Apply pending ``operator_actions`` once each, oldest first (AD-12, AD-16,
-        AD-25): the CLI only inserts them, the engine sets ``consumed_at`` and ``result``."""
+        AD-25): the CLI only inserts them, the engine sets ``consumed_at`` and ``result``.
+
+        Each action has an optional ``_prepare_<kind>`` step (broker calls, outside any
+        transaction; returning ``_PENDING`` leaves the action for the next tick) and an
+        ``_apply_<kind>`` step whose store writes commit in ONE transaction with
+        ``consumed_at``, so a crash can never apply a command twice (review finding)."""
         rows = self.store.all(
             "SELECT * FROM operator_actions WHERE consumed_at IS NULL ORDER BY action_id"
         )
         for action in rows:
             if kinds is not None and action["kind"] not in kinds:
                 continue
-            handler = getattr(self, f"_action_{action['kind']}", None)
-            if handler is None:
-                result = f"ignored: {action['kind']} is not supported"
-            else:
-                result = handler(now, action, ticker)
-            if result is None:
-                continue  # not applicable yet: retried on the next tick
-            with self.store.transaction():
-                self.store.execute(
-                    "UPDATE operator_actions SET consumed_at = ?, result = ? "
-                    "WHERE action_id = ? AND consumed_at IS NULL",
-                    (iso(now), result, action["action_id"]),
-                )
+            prepare = getattr(self, f"_prepare_{action['kind']}", None)
+            apply = getattr(self, f"_apply_{action['kind']}", None)
+            try:
+                prepared = prepare(now, action, ticker) if prepare else None
+                if prepared is _PENDING:
+                    continue
+                with self.store.transaction():
+                    if apply is None:
+                        result = f"ignored: {action['kind']} is not supported"
+                    else:
+                        result = apply(now, action, prepared)
+                    self.store.execute(
+                        "UPDATE operator_actions SET consumed_at = ?, result = ? "
+                        "WHERE action_id = ? AND consumed_at IS NULL",
+                        (iso(now), result, action["action_id"]),
+                    )
+            except OSError as exc:  # e.g. the kill-switch file is locked on Windows
+                self.error(now, f"operator_action_{action['kind']}", exc)
+                continue  # rolled back: retried on the next tick
             log.warning(
                 "operator action %s %s (%s) consumed: %s",
                 action["action_id"], action["kind"], action["note"], result,
             )  # fmt: skip
+
+    def _pending_flatten(self) -> bool:
+        return (
+            self.store.one(
+                "SELECT 1 FROM operator_actions WHERE kind = 'flatten' AND consumed_at IS NULL"
+            )
+            is not None
+        )
+
+    # reset_halt ------------------------------------------------------------------------
+
+    def _halts_for(self, action) -> list:  # noqa: ANN001
+        """Active halts the action may reset: matching rule, and triggered no later than
+        the action itself (a halt raised after the command was issued is never reset by
+        it, review finding)."""
+        rule = action["target_id"] or "all"
+        rows = self.store.all(
+            "SELECT halt_id, rule FROM halts WHERE reset_at IS NULL AND triggered_at <= ?",
+            (action["at"],),
+        )
+        return [r for r in rows if rule == "all" or r["rule"] == rule]
+
+    def _prepare_reset_halt(self, now: datetime, action, ticker: Ticker | None) -> object:  # noqa: ANN001
+        rows = self._halts_for(action)
+        rebase = bool(action["rebase_baseline"]) and any(
+            r["rule"] == "total_drawdown" for r in rows
+        )
+        if not rebase:
+            return None
+        if ticker is None:
+            try:
+                ticker = self._read("get_ticker", self.broker.get_ticker, self.cfg.pair)
+            except (TransientReadError, RateLimited) as exc:
+                self.error(now, "reset_halt", exc)
+                return _PENDING
+        return (ticker.bid + ticker.ask) / 2
+
+    def _apply_reset_halt(self, now: datetime, action, mid: object) -> str:  # noqa: ANN001
+        """``bot reset-halt <rule|all> --note [--rebase-baseline]`` (AD-12, Q-6): manual
+        only; the drawdown baseline moves only with ``--rebase-baseline`` and only when a
+        ``total_drawdown`` halt is among those reset (rebase_rules=("total_drawdown",))."""
+        rows = self._halts_for(action)
+        if not rows:
+            return (
+                f"no active halt {action['target_id'] or 'all'} (raised before it): nothing reset"
+            )
+        rebase = isinstance(mid, Decimal) and any(r["rule"] == "total_drawdown" for r in rows)
+        self._apply_reset(
+            now, rows, action["action_id"], action["note"], rebase, mid if rebase else Decimal(0)
+        )
+        rules = ",".join(r["rule"] for r in rows)
+        return f"reset {rules}" + (" with a new drawdown baseline" if rebase else "")
+
+    # flatten ---------------------------------------------------------------------------
+
+    def _prepare_flatten(self, now: datetime, action, ticker: Ticker | None) -> object:  # noqa: ANN001
+        """Broker side of ``bot flatten``: cancel the active intent's live order first."""
+        if ticker is None:
+            return _PENDING  # applied on a tick, with a fresh ticker
+        active = self._active_intent()
+        if active is not None and not active["is_flatten"]:
+            self._cancel_live(active, now)
+            if self._live_order(active["intent_id"]) is not None:
+                return _PENDING  # cancel not confirmed yet: retried on the next tick
+        return ticker
+
+    def _apply_flatten(self, now: datetime, action, ticker: object) -> str:  # noqa: ANN001
+        """``bot flatten --note`` (AD-25): end any active intent (``skipped_by_operator``),
+        then open a flatten intent selling the full base, referenced to the mid now. Its
+        submissions are exempt from orders/day, stale_candle and halt/kill, never from
+        stale_ticker, price_sanity or minimums (protected ``check_order``)."""
+        assert isinstance(ticker, Ticker)
+        active = self._active_intent()
+        if active is not None and active["is_flatten"]:
+            return "ignored: a flatten is already active"
+        if active is not None:
+            why = f"flatten requested (operator action {action['action_id']})"
+            self._finish(active["intent_id"], now, "cancelled", "skipped_by_operator", why)
+        mid = (ticker.bid + ticker.ask) / 2
+        position = self.store.position(self.cfg.pair)
+        if not self._sellable_by_minimums(position, mid):
+            return f"nothing to flatten: position {position} below the exchange minimums"
+        intent_id = self.store.insert(
+            "intents",
+            source_action_id=action["action_id"],
+            is_flatten=1,
+            pair=self.cfg.pair,
+            side="sell",
+            reference_price=dec(mid),
+            target_qty=dec(position),
+            state="working",
+            approval_mode=self.cfg.approval,
+            window_end_at=iso(now + self.cfg.window),
+            created_at=iso(now),
+            updated_at=iso(now),
+        )
+        log.warning("flatten intent %s: sell %s %s", intent_id, position, self.cfg.pair)
+        return f"flatten intent {intent_id} opened: sell {position}"
+
+    # approve / reject ------------------------------------------------------------------
 
     def _awaiting(self, action):  # noqa: ANN001, ANN202 - sqlite3.Row | None
         try:
@@ -914,7 +978,7 @@ class Engine:
         log.warning("intent %s expired without approval", intent["intent_id"])
         return True
 
-    def _action_approve(self, now: datetime, action, ticker: Ticker | None) -> str | None:  # noqa: ANN001
+    def _apply_approve(self, now: datetime, action, _prepared: object) -> str:  # noqa: ANN001
         """``bot approve <id>``: the approval covers the intent (side, quantity rule,
         window); re-prices inside the band need no new approval, and every submission
         still passes the risk checks (AD-16)."""
@@ -923,13 +987,12 @@ class Engine:
             return f"ignored: intent {action['target_id']} is not awaiting approval"
         if self._expire_if_due(intent, now):
             return "too late: the intent expired"
-        with self.store.transaction():
-            self.store.update(
-                "intents", "intent_id", intent["intent_id"], state="working", updated_at=iso(now)
-            )
+        self.store.update(
+            "intents", "intent_id", intent["intent_id"], state="working", updated_at=iso(now)
+        )
         return f"intent {intent['intent_id']} approved"
 
-    def _action_reject(self, now: datetime, action, ticker: Ticker | None) -> str | None:  # noqa: ANN001
+    def _apply_reject(self, now: datetime, action, _prepared: object) -> str:  # noqa: ANN001
         intent = self._awaiting(action)
         if intent is None:
             return f"ignored: intent {action['target_id']} is not awaiting approval"
@@ -939,20 +1002,33 @@ class Engine:
         )  # fmt: skip
         return f"intent {intent['intent_id']} rejected"
 
-    def _action_kill_on(self, now: datetime, action, ticker: Ticker | None) -> str:  # noqa: ANN001
+    # kill switch -----------------------------------------------------------------------
+
+    def _apply_kill_on(self, now: datetime, action, _prepared: object) -> str:  # noqa: ANN001
         # `bot kill on` creates the file itself (risk.kill_switch.engage); the row is the
         # audit record. The state change is logged from the file by _log_kill_state.
         engaged = self._kill_switch()
         return "kill switch file present" if engaged else "kill switch file absent"
 
-    def _action_kill_off(self, now: datetime, action, ticker: Ticker | None) -> str:  # noqa: ANN001
-        """AD-12: disengage is CLI-only and the engine is the only deleter of the file."""
+    def _apply_kill_off(self, now: datetime, action, _prepared: object) -> str:  # noqa: ANN001
+        """AD-12: disengage is CLI-only and the engine is the only deleter of the file. A
+        switch engaged AFTER the ``kill off`` command (dashboard, ``kill on``, by hand) is
+        kept: the newer request wins (review finding). An ``OSError`` (file held open on
+        Windows) rolls back and the action is retried next tick."""
         if self._kill_path is None:
             return "ignored: no kill switch path configured"
-        existed = self._kill_path.exists()
-        self._kill_path.unlink(missing_ok=True)
+        if not self._kill_path.exists():
+            return "kill switch was not engaged"
+        state = read_kill_switch(self._kill_path)
+        if state.at is not None:
+            written = datetime.strptime(state.at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        else:  # a hand-made file: its modification time
+            written = datetime.fromtimestamp(self._kill_path.stat().st_mtime, tz=UTC)
+        if written > parse_iso(action["at"]):
+            return "kept: the kill switch was engaged again after this kill off request"
+        self._kill_path.unlink()
         self._log_kill_state(now, self._kill_switch())
-        return "kill switch file deleted" if existed else "kill switch was not engaged"
+        return "kill switch file deleted"
 
     def _read(self, name: str, fn: Callable, *args: object):  # noqa: ANN202
         """A broker read with AD-8 handling: ``RateLimited`` sleeps ``retry_after_s``,
@@ -978,7 +1054,10 @@ class Engine:
 
     def _record_pricing(self, now: datetime, cl: str, side: str, price: Decimal) -> None:
         """AD-6: record the bid/ask each order was priced from (``api_calls`` endpoint
-        ``priced_from``), the input of the backtest-vs-paper consistency check."""
+        ``priced_from``), the input of the backtest-vs-paper consistency check. Health
+        data: off in the backtest (``health_records``)."""
+        if not self.cfg.health_records:
+            return
         t = self._priced_ticker
         detail = {"cl_ord_id": cl, "side": side, "limit": str(price)}
         if t is not None:
@@ -1579,6 +1658,11 @@ class Engine:
         order = self._live_order(intent_id)
         if order is not None:
             self._sync_order(order, now)
+        if not intent["is_flatten"] and (self._active_halts() or self._kill_switch()):
+            # A halt raised while syncing (reconcile_mismatch) stops the intent now, with
+            # the AD-28 outcome `halted`, before any re-price (review finding).
+            self._sweep(now, f"halt: {', '.join(self._active_halts()) or 'kill switch'}")
+            return
         completing = intent["parent_intent_id"] is not None  # a completion intent
 
         if not completing and self._target_reached(intent_id):
@@ -1782,6 +1866,8 @@ class Engine:
                 "partially_filled",
                 "unsellable remainder: a completion intent (parent_intent_id link) follows",
             )
+            manual = intent["approval_mode"] == "manual"
+            child_end = parse_iso(intent["window_end_at"]) + self.cfg.completion_window
             child = self.store.insert(
                 "intents",
                 parent_intent_id=intent["intent_id"],
@@ -1789,12 +1875,19 @@ class Engine:
                 side="buy",
                 reference_price=dec(mid),
                 target_qty=dec(target if isinstance(target, Decimal) else Decimal(0)),
-                state="working",
+                # AD-16: a completion is a NEW intent; in manual mode it needs its own
+                # approval (review finding), with its window end as the deadline.
+                state="awaiting_approval" if manual else "working",
                 approval_mode=intent["approval_mode"],
-                window_end_at=iso(parse_iso(intent["window_end_at"]) + self.cfg.completion_window),
+                approval_deadline_at=iso(child_end) if manual else None,
+                window_end_at=iso(child_end),
                 created_at=iso(now),
                 updated_at=iso(now),
             )
+        if manual:
+            qty = target if isinstance(target, Decimal) else Decimal(0)
+            self._announce_approval(child, "buy", qty, self._price("buy", ticker), mid, child_end)
+            return
         self._resubmit(self._intent(child), now, ticker)
 
     def _journal_signal(self, intent) -> str | None:  # noqa: ANN001

@@ -88,6 +88,26 @@ class Store:
         return store
 
     @classmethod
+    def open_existing(cls, path: Path) -> Store:
+        """Open an EXISTING store read-write without creating or migrating it; refuses a
+        schema version other than the code's. Used by the CLI to insert operator actions
+        (AD-17): only the engine, holding its lock, creates or migrates a store."""
+        if not Path(path).is_file():
+            raise StoreError(f"no store at {path}")
+        conn = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=rw", uri=True,
+                               isolation_level=None)  # fmt: skip
+        conn.row_factory = sqlite3.Row
+        for pragma in ("foreign_keys=ON", "busy_timeout=5000"):
+            conn.execute(f"PRAGMA {pragma}")
+        store = cls(conn, read_only=False)
+        try:
+            store._check_version()
+        except BaseException:
+            conn.close()
+            raise
+        return store
+
+    @classmethod
     def open_readonly(cls, path: Path) -> Store:
         """Open an existing file read-only (``mode=ro``); never creates it (AD-17)."""
         if not Path(path).is_file():

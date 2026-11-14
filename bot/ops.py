@@ -36,7 +36,7 @@ def write_action(
         raise ValueError("a --note is required for every operator action")
     if not Path(db).is_file():
         raise StoreError(f"no store at {db}: start the engine once first")
-    store = Store.open(db)
+    store = Store.open_existing(db)  # never creates or migrates (AD-17)
     try:
         with store.transaction():
             return store.insert(
