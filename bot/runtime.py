@@ -26,13 +26,14 @@ unauthenticated ccxt endpoints are used.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
 import sys
 import traceback
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -195,8 +196,6 @@ class StoreRecorder:
     ) -> None:
         if self.store is None:
             return
-        import json
-
         try:
             self.store.insert(
                 "api_calls",
@@ -227,7 +226,6 @@ class DryRun:
     clock: Clock
     approval: str
     tick: timedelta
-    extra: dict[str, Any] = field(default_factory=dict)
 
 
 def engine_config(

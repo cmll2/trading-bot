@@ -409,12 +409,8 @@ class Engine:
         ctx = HaltContext(equity, self._day_open_equity(now), self._baseline())
         for trigger in evaluate_halts(ctx, self.limits):
             with self.store.transaction():
-                cur = self.store.execute(
-                    "INSERT INTO halts (rule, triggered_at, reason) VALUES (?, ?, ?) "
-                    "ON CONFLICT DO NOTHING",
-                    (trigger.rule, iso(now), trigger.reason),
-                )
-                if cur.rowcount:
+                new = self._insert_halt(trigger.rule, iso(now), trigger.reason)
+                if new:
                     self._risk_event(now, "halt", trigger.rule, None, trigger.reason, {})
 
     def reset_halts(self, now: datetime, note: str, rebase_rules: tuple[str, ...]) -> list[str]:
@@ -574,14 +570,20 @@ class Engine:
         """Insert an active halt for ``rule`` (kept until ``bot reset-halt``) and write a
         risk event. Returns True when the halt is new."""
         with self.store.transaction():
-            cur = self.store.execute(
-                "INSERT INTO halts (rule, triggered_at, reason) VALUES (?, ?, ?) "
-                "ON CONFLICT DO NOTHING",
-                (rule, iso(now), reason),
-            )
+            new = self._insert_halt(rule, iso(now), reason)
             self._risk_event(now, kind, rule, None, reason, {})
-        if cur.rowcount:
+        if new:
             log.error("HALT %s: %s", rule, reason)
+        return new
+
+    def _insert_halt(self, rule: str, triggered_at: str, reason: str) -> bool:
+        """Insert an active halt; an already active halt of the rule is kept
+        (``one_active_halt_per_rule``). Returns True when the row is new."""
+        cur = self.store.execute(
+            "INSERT INTO halts (rule, triggered_at, reason) VALUES (?, ?, ?) "
+            "ON CONFLICT DO NOTHING",
+            (rule, triggered_at, reason),
+        )
         return bool(cur.rowcount)
 
     def fatal(self, now: datetime, reason: str) -> None:
@@ -735,11 +737,7 @@ class Engine:
                 self._risk_event(
                     now, "reconcile_mismatch", "reconcile_mismatch", None, what, detail
                 )
-            self.store.execute(
-                "INSERT INTO halts (rule, triggered_at, reason) VALUES (?, ?, ?) "
-                "ON CONFLICT DO NOTHING",
-                ("reconcile_mismatch", iso(now), reason[:1000]),
-            )
+            self._insert_halt("reconcile_mismatch", iso(now), reason[:1000])
         log.error("RECONCILIATION MISMATCH: %s", reason)
         self.cancel_all_resting(now)
         raise ReconcileMismatch(reason)
@@ -1508,10 +1506,8 @@ class Engine:
             order = self.store.one("SELECT * FROM orders WHERE cl_ord_id = ?", (f.cl_ord_id,))
             if order is None:
                 with self.store.transaction():
-                    self.store.execute(
-                        "INSERT INTO halts (rule, triggered_at, reason) VALUES (?, ?, ?) "
-                        "ON CONFLICT DO NOTHING",
-                        ("reconcile_mismatch", iso(now), f"unknown fill {f.exchange_trade_id}"),
+                    self._insert_halt(
+                        "reconcile_mismatch", iso(now), f"unknown fill {f.exchange_trade_id}"
                     )
                     self._risk_event(
                         now,
@@ -1931,11 +1927,7 @@ class Engine:
             return False
         reason = f"order {order['cl_ord_id']}: cancel/fills not settled within timeout"
         with self.store.transaction():
-            self.store.execute(
-                "INSERT INTO halts (rule, triggered_at, reason) VALUES (?, ?, ?) "
-                "ON CONFLICT DO NOTHING",
-                ("reconcile_mismatch", iso(now), reason),
-            )
+            self._insert_halt("reconcile_mismatch", iso(now), reason)
             self._risk_event(now, "reconcile_mismatch", "reconcile_mismatch", intent_id, reason, {})
         return True
 
