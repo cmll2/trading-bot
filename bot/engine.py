@@ -821,6 +821,51 @@ class Engine:
                 action["action_id"], action["kind"], action["note"], result,
             )  # fmt: skip
 
+    def _awaiting(self, action):  # noqa: ANN001, ANN202 - sqlite3.Row | None
+        try:
+            intent_id = int(action["target_id"])
+        except (TypeError, ValueError):
+            return None
+        intent = self._intent(intent_id)
+        if intent is None or intent["state"] != "awaiting_approval":
+            return None
+        return intent
+
+    def _expire_if_due(self, intent, now: datetime) -> bool:  # noqa: ANN001
+        """AD-16: past its deadline (the window end) an unapproved intent expires, with
+        signal outcome ``skipped_by_operator``."""
+        deadline = parse_iso(intent["approval_deadline_at"] or intent["window_end_at"])
+        if now < deadline:
+            return False
+        self._finish(intent["intent_id"], now, "expired", "skipped_by_operator", "approval expired")
+        log.warning("intent %s expired without approval", intent["intent_id"])
+        return True
+
+    def _action_approve(self, now: datetime, action, ticker: Ticker | None) -> str | None:  # noqa: ANN001
+        """``bot approve <id>``: the approval covers the intent (side, quantity rule,
+        window); re-prices inside the band need no new approval, and every submission
+        still passes the risk checks (AD-16)."""
+        intent = self._awaiting(action)
+        if intent is None:
+            return f"ignored: intent {action['target_id']} is not awaiting approval"
+        if self._expire_if_due(intent, now):
+            return "too late: the intent expired"
+        with self.store.transaction():
+            self.store.update(
+                "intents", "intent_id", intent["intent_id"], state="working", updated_at=iso(now)
+            )
+        return f"intent {intent['intent_id']} approved"
+
+    def _action_reject(self, now: datetime, action, ticker: Ticker | None) -> str | None:  # noqa: ANN001
+        intent = self._awaiting(action)
+        if intent is None:
+            return f"ignored: intent {action['target_id']} is not awaiting approval"
+        self._finish(
+            intent["intent_id"], now, "cancelled", "skipped_by_operator",
+            f"rejected by the operator: {action['note']}",
+        )  # fmt: skip
+        return f"intent {intent['intent_id']} rejected"
+
     def _action_kill_on(self, now: datetime, action, ticker: Ticker | None) -> str:  # noqa: ANN001
         # `bot kill on` creates the file itself (risk.kill_switch.engage); the row is the
         # audit record. The state change is logged from the file by _log_kill_state.
@@ -1451,7 +1496,10 @@ class Engine:
         phase. A new order is placed only once the previous one is confirmed closed and
         its fills are ingested (AD-27)."""
         intent = self._active_intent()
-        if intent is None or intent["state"] == "awaiting_approval":
+        if intent is None:
+            return
+        if intent["state"] == "awaiting_approval":
+            self._expire_if_due(intent, now)
             return
         intent_id = intent["intent_id"]
         self._ingest_fills(intent, now)
