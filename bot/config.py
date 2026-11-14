@@ -77,6 +77,7 @@ class ExecutionSettings(_Frozen):
     sim_half_spread_bps: Decimal = Field(ge=0, lt=100)  # AD-6 backtest bid/ask
     tick_seconds: int = Field(gt=0, le=900)  # AD-29 engine tick / backtest placement lag
     fill_settle_timeout_seconds: int = Field(gt=0, le=3600)  # AD-27
+    unknown_grace_seconds: int = Field(default=60, gt=0, le=3600)  # AD-8 find_order grace
     # Submission caps (per intent and per day) live in the protected risk: section.
 
 

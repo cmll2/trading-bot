@@ -26,6 +26,7 @@ the process environment (never from .env), plus a strategy allowed in live. Only
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -36,9 +37,11 @@ from typing import Any
 
 import pandas as pd
 
+from bot import logging_setup, ops, runtime
 from bot.backtest import command as backtest_command
 from bot.backtest.lookahead import LookAheadError
 from bot.backtest.runner import InsufficientData
+from bot.broker.errors import RateLimited, TransientReadError
 from bot.clock import Clock, SystemClock
 from bot.config import (
     DEFAULT_CONFIG_PATH,
@@ -167,6 +170,21 @@ def _parser() -> argparse.ArgumentParser:
             p.add_argument("--reason", default=None, help="reason for --rerun-holdout")
         if name == "live":
             p.add_argument("--live", action="store_true", help="required to run live")
+        if name == "dry-run":
+            p.add_argument(
+                "--approval",
+                choices=("manual", "autonomous"),
+                default=None,
+                help="override execution.approval for this dry-run session (logged)",
+            )
+            p.add_argument("--max-ticks", type=int, default=None, help=argparse.SUPPRESS)
+
+    for name, help_ in (
+        ("status", "print the state of a store: heartbeat, halts, kill switch, intent"),
+        ("stop", "ask a running engine to stop gracefully after its current tick"),
+    ):
+        p = sub.add_parser(name, help=help_, allow_abbrev=False)
+        _store_args(p)
 
     data = sub.add_parser("data", help="market data cache (AD-18)", allow_abbrev=False)
     data_sub = data.add_subparsers(dest="data_command", required=True)
@@ -230,6 +248,13 @@ def _parser() -> argparse.ArgumentParser:
             help=f"{what}; ISO date or datetime, UTC (a date means 00:00 UTC)",
         )
     return parser
+
+
+def _store_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    p.add_argument("--env-file", type=Path, default=DEFAULT_ENV_PATH)
+    p.add_argument("--strategy", default=None, help="strategy id (default: config)")
+    p.add_argument("--mode", choices=("dry-run",), default="dry-run", help="store mode")
 
 
 def _utc_instant(text: str) -> datetime:
@@ -471,11 +496,90 @@ def _backtest_command(args: argparse.Namespace, settings: Settings, strategy_id:
     return EXIT_OK
 
 
+def _dry_run_command(args: argparse.Namespace, settings: Settings, strategy_id: str) -> int:
+    """``bot dry-run`` (M3): the shared engine with the paper broker on live public data."""
+    db = runtime.store_path(settings, "dry-run", strategy_id)
+    context = logging_setup.configure(runtime.log_path(settings, "dry-run", strategy_id),
+                                      "dry-run", strategy_id)  # fmt: skip
+    clock = _clock_factory()
+    try:
+        dry = runtime.build_dry_run(
+            settings, strategy_id, _exchange_factory(), clock, approval=args.approval
+        )
+    except runtime.StartRefused as exc:
+        _err(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    except (TransientReadError, RateLimited) as exc:
+        _err(f"REFUSED: cannot read public market data: {exc}")
+        return EXIT_REFUSED
+    if args.approval is not None:
+        logging.getLogger("bot.cli").warning(
+            "execution.approval overridden for this dry-run session: %s (config: %s)",
+            args.approval, settings.execution.approval,
+        )  # fmt: skip
+    stop = runtime.StopFlag(runtime.stop_path(db))
+    stop.install_signal_handlers()
+    try:
+        result = runtime.run_loop(dry, stop, max_ticks=args.max_ticks, on_start=context)
+    finally:
+        dry.store.close()
+    if result.exit_code == runtime.EXIT_REFUSED:
+        _err(f"REFUSED: {result.stop_reason}")
+    elif result.exit_code != runtime.EXIT_OK:
+        _err(f"STOPPED: {result.stop_reason}")
+    return result.exit_code
+
+
+def _store_for(args: argparse.Namespace) -> tuple[Settings, str, Path] | int:
+    try:
+        settings = load_settings(args.config, args.env_file)
+    except ConfigError as exc:
+        _err(f"REFUSED: invalid configuration: {exc}")
+        return EXIT_REFUSED
+    strategy_id = args.strategy or settings.strategy.id
+    return settings, strategy_id, runtime.store_path(settings, args.mode, strategy_id)
+
+
+def _status_command(args: argparse.Namespace) -> int:
+    found = _store_for(args)
+    if isinstance(found, int):
+        return found
+    settings, _, db = found
+    if not db.is_file():
+        _err(f"no store at {db}")
+        return 1
+    st = ops.status(
+        db,
+        _clock_factory().now(),
+        settings.execution.tick_seconds,
+        settings.risk.kill_switch_path,
+        pid_alive=runtime.pid_alive,
+    )
+    print("\n".join(st.lines))
+    return EXIT_OK if st.healthy else 1
+
+
+def _stop_command(args: argparse.Namespace) -> int:
+    found = _store_for(args)
+    if isinstance(found, int):
+        return found
+    _, _, db = found
+    path = runtime.stop_path(db)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"stop requested at {_clock_factory().now().isoformat()}\n", encoding="utf-8")
+    print(f"stop requested ({path}); the engine stops after its current tick (<= 30 s)")
+    return EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     args = _parser().parse_args(argv)
     env = dict(os.environ) if env is None else env
     if args.command == "data":
         return _data_command(args)
+    if args.command == "status":
+        return _status_command(args)
+    if args.command == "stop":
+        return _stop_command(args)
     mode: Mode = args.command
 
     if mode == "live":
@@ -509,9 +613,11 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         _err(f"REFUSED: {exc}")
         return EXIT_REFUSED
     if mode == "backtest":
+        if strategy_id == "plumbing":
+            _err("backtest of the plumbing strategy is not implemented (dry-run exercise only)")
+            return EXIT_NOT_IMPLEMENTED
         return _backtest_command(args, settings, strategy_id)
-    _err(f"{mode} is not implemented yet (M0 scaffold)")
-    return EXIT_NOT_IMPLEMENTED
+    return _dry_run_command(args, settings, strategy_id)
 
 
 if __name__ == "__main__":

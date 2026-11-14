@@ -134,12 +134,11 @@ def test_unknown_strategy_is_refused(base_args, no_broker) -> None:
 # --- other modes are stubs -------------------------------------------------------------
 
 
-# M2: ``backtest`` is implemented for v0_trend (tests/backtest/); dry-run stays a stub until
-# M3, and the plumbing strategy is implemented at M3 in every mode.
-@pytest.mark.parametrize(
-    ("command", "strategy"),
-    [("dry-run", "v0_trend"), ("dry-run", "plumbing"), ("backtest", "plumbing")],
-)
+# M2: ``backtest`` is implemented for v0_trend (tests/backtest/). M3: ``dry-run`` is
+# implemented (tests/engine/test_dry_run.py drives it with a fake public exchange; running
+# it here would reach the network, which the autouse block forbids). The plumbing strategy
+# is a dry-run exercise: its backtest stays not implemented.
+@pytest.mark.parametrize(("command", "strategy"), [("backtest", "plumbing")])
 def test_backtest_and_dry_run_are_stubs(base_args, no_broker, command, strategy) -> None:
     code = _run(command, base_args, "--strategy", strategy, env={})
     assert code == cli.EXIT_NOT_IMPLEMENTED

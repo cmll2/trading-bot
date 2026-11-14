@@ -16,11 +16,17 @@ Ticker (AD-6): bid/ask = close of the last closed, non-synthetic execution candl
 so during an exchange halt (synthetic candles, audit M1 F-2) the ticker goes stale and the
 risk checks refuse to trade. Using the last closed close rather than the open of the
 still-forming candle keeps the backtest strictly causal (decision 2026-11-13).
+
+Dry-run (M3): ``ticker_source`` replaces that modelled ticker with the LIVE public bid/ask
+(``bot.data.live.LiveFeed.ticker``), and ``rules_source`` re-reads the public market
+metadata whenever the engine calls ``load_market`` (AD-13). Fills, fees, minimums,
+slippage and the post-only check run through exactly the same code as in the backtest.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Literal
@@ -85,6 +91,8 @@ class PaperBroker:
         initial_quote: Decimal,
         exec_timeframe: str = "15m",
         liquidity: Literal["maker", "taker"] = "maker",
+        ticker_source: Callable[[str], Ticker] | None = None,
+        rules_source: Callable[[str], MarketRules] | None = None,
     ) -> None:
         self._store = store
         self._md = market_data
@@ -96,6 +104,8 @@ class PaperBroker:
         self._tf = exec_timeframe
         self._interval = timedelta(seconds=TIMEFRAME_SECONDS[exec_timeframe])
         self._liquidity = liquidity
+        self._ticker_source = ticker_source
+        self._rules_source = rules_source
         if store.one("SELECT 1 FROM paper_balances") is None:
             with store.transaction():
                 store.insert(
@@ -133,6 +143,8 @@ class PaperBroker:
     # --- port: reads --------------------------------------------------------------------
 
     def load_market(self, pair: str) -> MarketRules:
+        if self._rules_source is not None:
+            self._rules = self._rules_source(pair)
         return self._rules
 
     def get_fee_rates(self, pair: str) -> FeeRates:
@@ -146,6 +158,8 @@ class PaperBroker:
         }
 
     def get_ticker(self, pair: str) -> Ticker:
+        if self._ticker_source is not None:
+            return self._ticker_source(pair)
         hist = self._md.closed_candles(pair, self._tf, limit=_TICKER_LOOKBACK)
         real = [i for i in range(len(hist)) if not bool(hist.synthetic[i])]
         if not real:

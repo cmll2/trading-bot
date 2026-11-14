@@ -23,11 +23,13 @@ Every submission passes ``risk.check_order`` and the decision is handed to
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from pathlib import Path
 from typing import Literal
 
 from bot.broker.base import Broker, MarketRules, OrderRequest, Ticker
@@ -40,6 +42,7 @@ from bot.broker.errors import (
 )
 from bot.config import TIMEFRAME_SECONDS
 from bot.data.market import MarketData
+from bot.logging_setup import redact
 from bot.risk.checks import ProposedOrder, RiskContext, RiskDecision, check_order
 from bot.risk.halts import HaltContext, evaluate_halts
 from bot.risk.limits import RiskLimits
@@ -53,6 +56,8 @@ from bot.sizing import (
 )
 from bot.store import Store, dec, iso, parse_iso
 from bot.strategy.base import Mode, Strategy
+
+log = logging.getLogger("bot.engine")
 
 ACTIVE_INTENT_STATES = ("awaiting_approval", "working", "completing")
 LIVE_ORDER_STATES = (
@@ -85,6 +90,10 @@ class EngineError(RuntimeError):
     """The engine cannot continue safely."""
 
 
+class ReconcileMismatch(EngineError):
+    """Store and broker disagree (AD-9): halted with ``reconcile_mismatch``; exit non-zero."""
+
+
 class FutureCandleError(EngineError):
     """The market-data adapter served a candle that is not closed at the evaluation time:
     a look-ahead bug in the adapter (audit M2 F-2). Never trade on it."""
@@ -107,6 +116,7 @@ class EngineConfig:
     limits_hash: str
     pricing: Literal["passive", "aggressive"] = "passive"
     fill_settle_timeout: timedelta = timedelta(seconds=60)  # AD-27
+    unknown_grace: timedelta = timedelta(seconds=60)  # AD-8: unknown -> not_found after this
 
 
 @dataclass(frozen=True)
@@ -132,6 +142,7 @@ class Engine:
         *,
         kill_switch: Callable[[], bool] = lambda: False,
         new_cl_ord_id: Callable[[], str] = _default_cl_ord_id,
+        kill_switch_path: Path | None = None,
     ) -> None:
         if strategy.timeframe != config.timeframe:
             raise EngineError("strategy timeframe and engine timeframe differ")
@@ -143,6 +154,7 @@ class Engine:
         self.limits = limits
         self.cfg = config
         self._kill_switch = kill_switch
+        self._kill_path = kill_switch_path  # the engine is the only deleter (AD-12)
         self._new_id = new_cl_ord_id
         self._interval = timedelta(seconds=TIMEFRAME_SECONDS[config.timeframe])
         self._rules: MarketRules | None = None
@@ -150,7 +162,7 @@ class Engine:
 
     # --- lifecycle ----------------------------------------------------------------------
 
-    def start(self) -> None:
+    def start(self, pid: int = 0) -> None:
         """Open a run; write the write-once account baseline on first start (AD-26)."""
         now = self.clock.now()
         self._rules = self.broker.load_market(self.cfg.pair)
@@ -182,7 +194,7 @@ class Engine:
                 git_dirty=int(self.cfg.git_dirty),
                 config_hash=self.cfg.config_hash,
                 limits_hash=self.cfg.limits_hash,
-                pid=0,
+                pid=pid,
             )
 
     def stop(self, reason: str) -> None:
@@ -357,14 +369,71 @@ class Engine:
 
     # --- journal helpers ----------------------------------------------------------------
 
-    def _error(self, now: datetime, component: str, exc: Exception) -> None:
+    def _error(self, now: datetime, component: str, exc: BaseException) -> None:
+        self.error(now, component, exc)
+
+    def error(
+        self, now: datetime, component: str, exc: BaseException, tb: str | None = None
+    ) -> None:
+        """Record an error, redacted before insert (AD-22)."""
+        log.warning("%s error: %s: %s", component, type(exc).__name__, exc)
         self.store.insert(
             "errors",
             at=iso(now),
             component=component,
             error_type=type(exc).__name__,
-            message=str(exc)[:500],
+            message=redact(str(exc))[:500],
+            traceback=None if tb is None else redact(tb)[:20000],
         )
+
+    def heartbeat(self, now: datetime, loop_state: str) -> None:
+        """One heartbeat row per loop iteration (NFR-05); written by the runtime loop."""
+        if self.run_id is None:
+            raise EngineError("call start() before heartbeat()")
+        self.store.execute(
+            "INSERT OR IGNORE INTO heartbeats (run_id, at, loop_state) VALUES (?, ?, ?)",
+            (self.run_id, iso(now), loop_state),
+        )
+
+    def raise_halt(self, now: datetime, rule: str, reason: str, kind: str = "halt") -> bool:
+        """Insert an active halt for ``rule`` (kept until ``bot reset-halt``) and write a
+        risk event. Returns True when the halt is new."""
+        with self.store.transaction():
+            cur = self.store.execute(
+                "INSERT INTO halts (rule, triggered_at, reason) VALUES (?, ?, ?) "
+                "ON CONFLICT DO NOTHING",
+                (rule, iso(now), reason),
+            )
+            self._risk_event(now, kind, rule, None, reason, {})
+        if cur.rowcount:
+            log.error("HALT %s: %s", rule, reason)
+        return bool(cur.rowcount)
+
+    def fatal(self, now: datetime, reason: str) -> None:
+        """Fatal exit path (AD-29): halt with ``fatal_error`` and cancel the bot's known
+        resting orders, best effort. The position is kept."""
+        self.raise_halt(now, "fatal_error", reason)
+        self.cancel_all_resting(now)
+
+    def cancel_all_resting(self, now: datetime) -> None:
+        """Best-effort cancel of every resting order the store knows (fatal exits and
+        reconciliation mismatches). Errors are recorded, never raised."""
+        rows = self.store.all(
+            "SELECT * FROM orders WHERE state IN ('open', 'partially_filled', 'cancel_requested')"
+        )
+        for order in rows:
+            try:
+                if order["state"] != "cancel_requested":
+                    self._transition(order["order_id"], "cancel_requested", now)
+                self.broker.cancel_order(self.cfg.pair, order["cl_ord_id"])
+            except Exception as exc:  # noqa: BLE001 - best effort on a fatal path
+                self.error(now, "cancel_all_resting", exc)
+
+    def recover(self, now: datetime) -> None:
+        """AD-8 startup sequence (story 2)."""
+
+    def reconcile(self, now: datetime) -> None:
+        """AD-9 reconciliation (story 3)."""
 
     def _risk_event(
         self,
