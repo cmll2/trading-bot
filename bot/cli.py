@@ -37,7 +37,7 @@ from typing import Any
 
 import pandas as pd
 
-from bot import logging_setup, ops, runtime
+from bot import journal, logging_setup, ops, runtime
 from bot.backtest import command as backtest_command
 from bot.backtest.lookahead import LookAheadError
 from bot.backtest.runner import InsufficientData
@@ -66,6 +66,8 @@ from bot.data.validate import (
     read_cache_checked,
     validate_frame,
 )
+from bot.risk.kill_switch import engage
+from bot.store import StoreError
 from bot.strategy.base import Mode
 from bot.strategy.registry import StrategyNotAllowed, strategy_class_for
 
@@ -82,6 +84,14 @@ _exchange_factory: Callable[[], Any] = make_public_exchange
 _clock_factory: Callable[[], Clock] = SystemClock
 
 LIVE_TIMEFRAMES = frozenset({"4h", "1d"})  # CON-08
+HALT_RULES = (
+    "daily_loss",
+    "total_drawdown",
+    "reconcile_mismatch",
+    "fatal_error",
+    "clock_skew",
+    "all",
+)
 
 _GATE_KEY = object()
 
@@ -185,6 +195,36 @@ def _parser() -> argparse.ArgumentParser:
     ):
         p = sub.add_parser(name, help=help_, allow_abbrev=False)
         _store_args(p)
+
+    # Operator commands (AD-12, AD-16, AD-25): each inserts ONE operator_actions row; the
+    # running engine applies it on its next tick. ``kill on`` also creates the file.
+    p = sub.add_parser("kill", help="kill switch: on (engage now) / off (engine deletes)")
+    p.add_argument("state", choices=("on", "off"))
+    p.add_argument("--note", required=True)
+    _store_args(p)
+    p = sub.add_parser("reset-halt", help="reset an active halt (manual only, never timed)")
+    p.add_argument("rule", choices=HALT_RULES)
+    p.add_argument("--note", required=True)
+    p.add_argument(
+        "--rebase-baseline",
+        "--rebase",
+        dest="rebase_baseline",
+        action="store_true",
+        help="total_drawdown only: append a new drawdown baseline at current equity "
+        "(asks for a typed confirmation)",
+    )
+    _store_args(p)
+    p = sub.add_parser("flatten", help="sell the whole position (the only sell while stopped)")
+    p.add_argument("--note", required=True)
+    _store_args(p)
+    for name in ("approve", "reject"):
+        p = sub.add_parser(name, help=f"{name} an intent awaiting approval (manual mode)")
+        p.add_argument("intent_id", type=int)
+        p.add_argument("--note", required=(name == "reject"), default="approved via CLI")
+        _store_args(p)
+    p = sub.add_parser("journal", help="print the signal journal with would-have-returned")
+    p.add_argument("--limit", type=int, default=30)
+    _store_args(p)
 
     data = sub.add_parser("data", help="market data cache (AD-18)", allow_abbrev=False)
     data_sub = data.add_subparsers(dest="data_command", required=True)
@@ -559,6 +599,62 @@ def _status_command(args: argparse.Namespace) -> int:
     return EXIT_OK if st.healthy else 1
 
 
+REBASE_CONFIRMATION = "REBASE"
+
+
+def _operator_command(args: argparse.Namespace) -> int:
+    """Insert one operator action (the only table the CLI writes, AD-17)."""
+    found = _store_for(args)
+    if isinstance(found, int):
+        return found
+    settings, _, db = found
+    now = _clock_factory().now()
+    if args.command == "kill":
+        kind = f"kill_{args.state}"
+        if args.state == "on":
+            state = engage(settings.risk.kill_switch_path, "cli", now)
+            print(
+                f"KILL SWITCH ENGAGED (source={state.source}) at {settings.risk.kill_switch_path}"
+            )
+        target, rebase = None, False
+    elif args.command == "reset-halt":
+        kind, target, rebase = "reset_halt", args.rule, args.rebase_baseline
+        if rebase and args.rule not in ("total_drawdown", "all"):
+            _err("REFUSED: --rebase-baseline applies to a total_drawdown reset only")
+            return EXIT_REFUSED
+        if rebase:
+            print(
+                "This appends a NEW drawdown baseline at the current equity: the 25% total "
+                f"drawdown is then measured from it. Type {REBASE_CONFIRMATION} to confirm:"
+            )
+            if input().strip() != REBASE_CONFIRMATION:
+                _err("REFUSED: confirmation not given; nothing written")
+                return EXIT_REFUSED
+    elif args.command == "flatten":
+        kind, target, rebase = "flatten", None, False
+    else:  # approve / reject
+        kind, target, rebase = args.command, str(args.intent_id), False
+    try:
+        action_id = ops.write_action(db, now, kind, args.note, target, rebase)
+    except (ValueError, StoreError) as exc:
+        _err(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    print(f"operator action {action_id} ({kind}) recorded; the engine applies it on its next tick")
+    return EXIT_OK
+
+
+def _journal_command(args: argparse.Namespace) -> int:
+    found = _store_for(args)
+    if isinstance(found, int):
+        return found
+    _, _, db = found
+    if not db.is_file():
+        _err(f"no store at {db}")
+        return 1
+    print("\n".join(journal.render(db, limit=args.limit)))
+    return EXIT_OK
+
+
 def _stop_command(args: argparse.Namespace) -> int:
     found = _store_for(args)
     if isinstance(found, int):
@@ -580,6 +676,10 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         return _status_command(args)
     if args.command == "stop":
         return _stop_command(args)
+    if args.command in ("kill", "reset-halt", "flatten", "approve", "reject"):
+        return _operator_command(args)
+    if args.command == "journal":
+        return _journal_command(args)
     mode: Mode = args.command
 
     if mode == "live":

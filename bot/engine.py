@@ -45,6 +45,7 @@ from bot.data.market import MarketData
 from bot.logging_setup import redact
 from bot.risk.checks import ProposedOrder, RiskContext, RiskDecision, check_order
 from bot.risk.halts import HaltContext, evaluate_halts
+from bot.risk.kill_switch import read_kill_switch
 from bot.risk.limits import RiskLimits
 from bot.sizing import (
     NoOrder,
@@ -241,13 +242,18 @@ class Engine:
         self._last_ticker_ok = ticker.ts
         mid = (ticker.bid + ticker.ask) / 2
         first_of_day = self._day_open(now, mid)
+        self._consume_actions(now, ticker=ticker)
+        self._sync_stray_orders(now)
 
+        # AD-12: kill switch and halts are evaluated BEFORE any submission.
         equity = self.store.equity_at(now, mid, self.cfg.pair)
         self._evaluate_halts(now, equity)
         halts = self._active_halts()
         killed = self._kill_switch()
+        self._log_kill_state(now, killed)
         if halts or killed:
             self._sweep(now, "kill switch" if killed else f"halt: {', '.join(halts)}")
+            self._advance_flatten(now, ticker)  # the only sell while stopped (AD-25)
             if not first_of_day:
                 self._snapshot(now, mid, False)
             return TickResult(halted=True, signal_evaluated=False)
@@ -370,12 +376,75 @@ class Engine:
         return tuple(r["rule"] for r in rows)
 
     def _sweep(self, now: datetime, why: str) -> None:
-        """AD-12: cancel resting orders of the active intent, keep the position."""
+        """AD-12: cancel the resting order of the active NON-flatten intent, ingest its
+        final fills, end the intent ``halted`` (outcome ``halted``) and keep the position:
+        no sell is ever placed automatically. A flatten intent is left to run."""
         intent = self._active_intent()
-        if intent is None:
+        if intent is None or intent["is_flatten"]:
             return
         self._cancel_live(intent, now)
         self._finish(intent["intent_id"], now, "halted", "halted", why)
+        log.warning(
+            "intent %s halted (%s): orders cancelled, position kept", intent["intent_id"], why
+        )
+
+    def _advance_flatten(self, now: datetime, ticker: Ticker) -> None:
+        intent = self._active_intent()
+        if intent is not None and intent["is_flatten"]:
+            self._advance_intent(now, ticker)
+
+    def _log_kill_state(self, now: datetime, engaged: bool) -> None:
+        """Write ``kill_on``/``kill_off`` only when the observed state differs from the
+        last one logged (AD-12)."""
+        last = self.store.one(
+            "SELECT kind FROM risk_events WHERE kind IN ('kill_on', 'kill_off') "
+            "ORDER BY event_id DESC"
+        )
+        last_engaged = last is not None and last["kind"] == "kill_on"
+        if engaged == last_engaged:
+            return
+        if engaged:
+            state = read_kill_switch(self._kill_path) if self._kill_path else None
+            source = state.source if state else "file"
+            self._risk_event(
+                now, "kill_on", "kill_switch", None,
+                f"kill switch engaged (source={source})", {"path": str(self._kill_path)},
+            )  # fmt: skip
+            log.error("KILL SWITCH ENGAGED (source=%s): no new orders", source)
+        else:
+            self._risk_event(now, "kill_off", "kill_switch", None, "kill switch disengaged", {})
+            log.warning("kill switch disengaged")
+
+    def _sync_stray_orders(self, now: datetime) -> None:
+        """Live orders whose intent is no longer active (a halt ended the intent while a
+        cancel was still pending) are re-synced so their final fills are never lost."""
+        marks = ",".join("?" for _ in LIVE_ORDER_STATES)
+        active = ",".join("?" for _ in ACTIVE_INTENT_STATES)
+        rows = self.store.all(
+            f"SELECT o.* FROM orders o JOIN intents i USING (intent_id) "  # noqa: S608
+            f"WHERE o.state IN ({marks}) AND i.state NOT IN ({active})",
+            (*LIVE_ORDER_STATES, *ACTIVE_INTENT_STATES),
+        )
+        for order in rows:
+            intent = self._intent(order["intent_id"])
+            self._ingest_fills(intent, now)
+            fresh = self.store.one("SELECT * FROM orders WHERE order_id = ?", (order["order_id"],))
+            if fresh["state"] in ("open", "partially_filled"):
+                self._transition(fresh["order_id"], "cancel_requested", now)
+                fresh = self.store.one(
+                    "SELECT * FROM orders WHERE order_id = ?", (order["order_id"],)
+                )
+            if fresh["state"] == "cancel_requested":
+                try:
+                    self.broker.cancel_order(self.cfg.pair, fresh["cl_ord_id"])
+                except (OrderOutcomeUnknown, TransientReadError, RateLimited, OrderRejected) as exc:
+                    self.error(now, "cancel", exc)
+                self._ingest_fills(intent, now)
+            fresh = self.store.one("SELECT * FROM orders WHERE order_id = ?", (order["order_id"],))
+            if fresh["state"] == "unknown":
+                self._resolve_unknown(fresh)
+            else:
+                self._sync_order(fresh, now)
 
     # --- journal helpers ----------------------------------------------------------------
 
@@ -619,8 +688,47 @@ class Engine:
         self.cancel_all_resting(now)
         raise ReconcileMismatch(reason)
 
-    def _consume_actions(self, now: datetime, kinds: tuple[str, ...] | None = None) -> None:
-        """Consume pending operator actions (stories 5 to 7)."""
+    def _consume_actions(
+        self, now: datetime, kinds: tuple[str, ...] | None = None, ticker: Ticker | None = None
+    ) -> None:
+        """Apply pending ``operator_actions`` once each, oldest first (AD-12, AD-16,
+        AD-25): the CLI only inserts them, the engine sets ``consumed_at`` and ``result``."""
+        rows = self.store.all(
+            "SELECT * FROM operator_actions WHERE consumed_at IS NULL ORDER BY action_id"
+        )
+        for action in rows:
+            if kinds is not None and action["kind"] not in kinds:
+                continue
+            handler = getattr(self, f"_action_{action['kind']}", None)
+            if handler is None:
+                result = f"ignored: {action['kind']} is not supported"
+            else:
+                result = handler(now, action, ticker)
+            with self.store.transaction():
+                self.store.execute(
+                    "UPDATE operator_actions SET consumed_at = ?, result = ? "
+                    "WHERE action_id = ? AND consumed_at IS NULL",
+                    (iso(now), result, action["action_id"]),
+                )
+            log.warning(
+                "operator action %s %s (%s) consumed: %s",
+                action["action_id"], action["kind"], action["note"], result,
+            )  # fmt: skip
+
+    def _action_kill_on(self, now: datetime, action, ticker: Ticker | None) -> str:  # noqa: ANN001
+        # `bot kill on` creates the file itself (risk.kill_switch.engage); the row is the
+        # audit record. The state change is logged from the file by _log_kill_state.
+        engaged = self._kill_switch()
+        return "kill switch file present" if engaged else "kill switch file absent"
+
+    def _action_kill_off(self, now: datetime, action, ticker: Ticker | None) -> str:  # noqa: ANN001
+        """AD-12: disengage is CLI-only and the engine is the only deleter of the file."""
+        if self._kill_path is None:
+            return "ignored: no kill switch path configured"
+        existed = self._kill_path.exists()
+        self._kill_path.unlink(missing_ok=True)
+        self._log_kill_state(now, self._kill_switch())
+        return "kill switch file deleted" if existed else "kill switch was not engaged"
 
     def _read(self, name: str, fn: Callable, *args: object):  # noqa: ANN202
         """A broker read with AD-8 handling: ``RateLimited`` sleeps ``retry_after_s``,
@@ -999,8 +1107,14 @@ class Engine:
         decision: RiskDecision,
         now: datetime,
     ) -> str:
-        """Persist, then send one approved order (AD-7). Returns the order's state."""
+        """Persist, then send one approved order (AD-7). Returns the order's state.
+
+        The kill-switch file is re-read just before the order is persisted and sent
+        (AD-12): an engaged switch blocks every non-flatten submission ("blocked")."""
         intent_id = intent["intent_id"]
+        if not intent["is_flatten"] and self._kill_switch():
+            self._log_kill_state(now, True)
+            return "blocked"
         with self.store.transaction():
             order_id = self.store.insert(
                 "orders",
