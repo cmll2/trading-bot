@@ -161,7 +161,7 @@ def _table_counts(store) -> dict[str, int]:  # noqa: ANN001
 
 @pytest.fixture
 def cli_env(tmp_path, monkeypatch):  # noqa: ANN001, ANN201
-    clock = FakeClock(T0 - timedelta(seconds=5))
+    clock = FakeClock(T0 + timedelta(seconds=25))
     dry, _ = dry_run(tmp_path, clock)
     run(dry, ticks=1)
     monkeypatch.setattr(cli, "_clock_factory", lambda: clock)

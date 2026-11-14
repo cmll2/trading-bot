@@ -39,12 +39,12 @@ from typing import Any, Literal
 
 from bot.backtest.provenance import config_hash, git_commit, git_dirty, limits_hash
 from bot.broker.base import FeeRates
-from bot.broker.errors import FatalBrokerError, RateLimited, TransientReadError
+from bot.broker.errors import RateLimited, TransientReadError
 from bot.broker.paper import PaperBroker
 from bot.clock import Clock
 from bot.config import TIMEFRAME_SECONDS, Settings
 from bot.data.live import CcxtMarketData, LiveFeed
-from bot.engine import Engine, EngineConfig, EngineError, IllegalTransition, ReconcileMismatch
+from bot.engine import Engine, EngineConfig, ReconcileMismatch
 from bot.risk.kill_switch import kill_switch_engaged
 from bot.store import Store, iso
 from bot.strategy.base import Mode
@@ -146,6 +146,9 @@ class EngineLock:
                     raise StartRefused(
                         f"another engine (PID {holder}) holds {self.path}; one engine per store"
                     ) from None
+                if not holder and self._young():
+                    # Empty: another process created it and is writing its PID right now.
+                    raise StartRefused(f"{self.path} is being taken by another engine") from None
                 log.warning("taking over stale engine lock %s (PID %s gone)", self.path, holder)
                 self.path.unlink(missing_ok=True)
                 continue
@@ -154,6 +157,19 @@ class EngineLock:
             self.held = True
             return
         raise StartRefused(f"could not acquire {self.path}")
+
+    def _young(self, seconds: float = 30.0) -> bool:
+        try:
+            age = self._clock_now() - self.path.stat().st_mtime
+        except OSError:
+            return False
+        return age < seconds
+
+    @staticmethod
+    def _clock_now() -> float:
+        from bot.clock import SystemClock
+
+        return SystemClock().now().timestamp()
 
     def release(self) -> None:
         if self.held and self.holder() == self.pid:
@@ -397,26 +413,19 @@ def run_loop(
     skew = skew or (lambda: measure_skew(dry.feed))
     ticks = 0
     try:
-        lock.acquire()
-        offset = skew()
-        if abs(offset) > MAX_CLOCK_SKEW.total_seconds():
-            raise StartRefused(
-                f"local clock differs from Kraken server time by {offset:+.1f} s "
-                f"(> {MAX_CLOCK_SKEW.total_seconds():.0f} s): fix the system clock (AD-2)"
-            )
-        if stop.stop_file is not None:
-            stop.stop_file.unlink(missing_ok=True)  # an old stop request never blocks a start
-        engine.start(pid=lock.pid)
-        if on_start is not None:
-            on_start.run_id = engine.run_id
+        if not lock.held:
+            lock.acquire()
+        try:
+            offset = _startup(dry, stop, lock, skew, on_start)
+        except (TransientReadError, RateLimited) as exc:
+            # The exchange cannot be reached at startup: refuse (a supervisor retries);
+            # this is not a fault of the bot's state, so no halt is written.
+            raise StartRefused(f"public market data unreachable at startup: {exc}") from exc
         log.info(
-            "dry-run started: strategy=%s approval=%s store=%s run_id=%s clock_skew=%+.2fs "
+            "dry-run running: strategy=%s approval=%s store=%s run_id=%s clock_skew=%+.2fs "
             "(SIMULATED: paper broker, public data only)",
             dry.strategy_id, dry.approval, dry.db_path, engine.run_id, offset,
         )  # fmt: skip
-        engine.heartbeat(clock.now(), "starting")
-        engine.recover(clock.now())
-        engine.reconcile(clock.now())
         last_check = last_tick = clock.now()
         while not stop.check():
             if max_ticks is not None and ticks >= max_ticks:
@@ -428,12 +437,14 @@ def run_loop(
             now = clock.now()
             gap = now - last_tick
             engine.heartbeat(now, "tick")
+            if (now - last_check >= CHECK_EVERY or gap > SLEEP_GAP) and _hourly_checks(
+                engine, skew, now, gap
+            ):
+                # Before the tick: after a sleep, reconcile before anything can trade.
+                last_check = now
             _tick_once(engine, now)
             ticks += 1
             last_tick = now
-            if now - last_check >= CHECK_EVERY or gap > SLEEP_GAP:
-                last_check = now
-                _hourly_checks(engine, skew, now, gap)
         reason = stop.reason or "stopped"
         engine.heartbeat(clock.now(), "stopped")
         engine.stop(f"graceful stop: {reason}")
@@ -441,19 +452,40 @@ def run_loop(
         return LoopResult(EXIT_OK, reason, ticks)
     except StartRefused as exc:
         log.error("REFUSED: %s", exc)
-        if engine.run_id is not None:
+        if engine.run_id is not None and lock.held:
             engine.stop(f"refused: {exc}")
         return LoopResult(EXIT_REFUSED, str(exc), ticks)
     except ReconcileMismatch as exc:
         log.error("RECONCILIATION MISMATCH, halted: %s", exc)
         engine.stop(f"reconcile mismatch: {exc}")
         return LoopResult(EXIT_FATAL, f"reconcile mismatch: {exc}", ticks)
-    except (IllegalTransition, FatalBrokerError, EngineError) as exc:
-        return _fatal(engine, clock, exc, ticks)
     except Exception as exc:  # noqa: BLE001 - any unhandled error is fatal (AD-29)
+        if not lock.held:
+            log.error("FATAL before the engine lock was held: %s: %s", type(exc).__name__, exc)
+            return LoopResult(EXIT_FATAL, f"fatal: {exc}", ticks)
         return _fatal(engine, clock, exc, ticks)
     finally:
         lock.release()
+
+
+def _startup(dry: DryRun, stop: StopFlag, lock: EngineLock, skew, on_start) -> float:  # noqa: ANN001
+    """Skew check, run row, AD-8 recovery and AD-9 reconciliation, in that order."""
+    engine, clock = dry.engine, dry.clock
+    offset = skew()
+    if abs(offset) > MAX_CLOCK_SKEW.total_seconds():
+        raise StartRefused(
+            f"local clock differs from Kraken server time by {offset:+.1f} s "
+            f"(> {MAX_CLOCK_SKEW.total_seconds():.0f} s): fix the system clock (AD-2)"
+        )
+    if stop.stop_file is not None:
+        stop.stop_file.unlink(missing_ok=True)  # an old stop request never blocks a start
+    engine.start(pid=lock.pid)
+    if on_start is not None:
+        on_start.run_id = engine.run_id
+    engine.heartbeat(clock.now(), "starting")
+    engine.recover(clock.now())
+    engine.reconcile(clock.now())
+    return offset
 
 
 def _tick_once(engine: Engine, now: datetime) -> None:
@@ -470,22 +502,30 @@ def _tick_once(engine: Engine, now: datetime) -> None:
 
 def _hourly_checks(
     engine: Engine, skew: Callable[[], float], now: datetime, gap: timedelta
-) -> None:
+) -> bool:
+    """Hourly (and after-sleep) skew check and reconciliation. Returns False when the
+    exchange could not be read: the error is recorded and the checks run again on the
+    next tick (a network blip is never a fatal state)."""
     try:
         offset = skew()
     except (TransientReadError, RateLimited) as exc:
         engine.error(now, "clock_skew", exc)
-    else:
-        if abs(offset) > MAX_CLOCK_SKEW.total_seconds():
-            engine.raise_halt(
-                now,
-                "clock_skew",
-                f"local clock differs from Kraken server time by {offset:+.1f} s (AD-2)",
-                kind="stale_data",
-            )
+        return False
+    if abs(offset) > MAX_CLOCK_SKEW.total_seconds():
+        engine.raise_halt(
+            now,
+            "clock_skew",
+            f"local clock differs from Kraken server time by {offset:+.1f} s (AD-2)",
+            kind="stale_data",
+        )
     if gap > SLEEP_GAP:
         log.warning("%.0f s since the previous tick (sleep?): reconciling", gap.total_seconds())
-    engine.reconcile(now)
+    try:
+        engine.reconcile(now)
+    except (TransientReadError, RateLimited) as exc:
+        engine.error(now, "reconcile", exc)
+        return False
+    return True
 
 
 def _fatal(engine: Engine, clock: Clock, exc: BaseException, ticks: int) -> LoopResult:

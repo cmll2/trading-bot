@@ -272,7 +272,7 @@ def test_illegal_transition_in_the_loop_halts_fatal_error_and_exits_non_zero(
     from bot.clock import FakeClock
     from tests.engine.helpers import T0, dry_run, run
 
-    dry, _ = dry_run(tmp_path, FakeClock(T0 - timedelta(seconds=5)))
+    dry, _ = dry_run(tmp_path, FakeClock(T0 + timedelta(seconds=25)))
 
     def bad_tick():  # noqa: ANN202
         raise IllegalTransition("order 1: filled -> open")

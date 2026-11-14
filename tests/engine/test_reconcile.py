@@ -87,10 +87,10 @@ def test_store_order_missing_at_the_broker_halts(tmp_path) -> None:
 
 def test_tampered_paper_fill_halts_the_dry_run_at_startup(tmp_path) -> None:
     """Auditor check from the story: edit a paper_fills row and see the halt."""
-    clock = FakeClock(T0 - timedelta(seconds=5))
+    clock = FakeClock(T0 + timedelta(seconds=25))
     dry, exchange = dry_run(tmp_path, clock)
     exchange.candle_range = 500.0  # wide 15m candles: the resting buy fills
-    assert run(dry, ticks=40).exit_code == EXIT_OK
+    assert run(dry, ticks=70).exit_code == EXIT_OK  # the 00:15 candle settles at 00:30:10
     assert dry.store.one("SELECT count(*) FROM fills")[0] == 1
     dry.store.execute("UPDATE paper_fills SET qty = qty || '1'")  # the broker's side differs
     dry.store.execute("UPDATE paper_balances SET free = '1' WHERE asset = 'BTC'")
@@ -107,7 +107,7 @@ def test_tampered_paper_fill_halts_the_dry_run_at_startup(tmp_path) -> None:
 
 
 def test_reconciliation_runs_hourly_and_after_a_sleep_gap(tmp_path, monkeypatch) -> None:
-    clock = FakeClock(T0 - timedelta(seconds=5))
+    clock = FakeClock(T0 + timedelta(seconds=25))
     dry, _ = dry_run(tmp_path, clock)
     calls: list[object] = []
 

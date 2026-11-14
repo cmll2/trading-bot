@@ -133,7 +133,7 @@ def test_cli_kill_on_engages_and_off_only_records_an_action(tmp_path, monkeypatc
     from bot.clock import FakeClock
     from tests.engine.helpers import T0, dry_run, run
 
-    clock = FakeClock(T0 - timedelta(seconds=5))
+    clock = FakeClock(T0 + timedelta(seconds=25))
     dry, _ = dry_run(tmp_path, clock)
     run(dry, ticks=1)
     monkeypatch.setattr(cli, "_clock_factory", lambda: clock)

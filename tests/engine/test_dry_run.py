@@ -32,7 +32,7 @@ def test_dry_run_uses_the_shared_engine_with_dry_run_adapters(tmp_path, monkeypa
 
 
 def test_one_daily_close_journals_a_signal_and_places_a_paper_order(tmp_path) -> None:
-    clock = FakeClock(T0 - timedelta(seconds=5))
+    clock = FakeClock(T0 + timedelta(seconds=25))
     dry, exchange = dry_run(tmp_path, clock)
     result = run(dry, ticks=3)
     assert result.exit_code == EXIT_OK
@@ -63,7 +63,7 @@ def test_one_daily_close_journals_a_signal_and_places_a_paper_order(tmp_path) ->
 
 
 def test_paper_balance_and_account_baseline_survive_a_restart(tmp_path) -> None:
-    clock = FakeClock(T0 - timedelta(seconds=5))
+    clock = FakeClock(T0 + timedelta(seconds=25))
     dry, exchange = dry_run(tmp_path, clock)
     run(dry, ticks=2)
     before = {
@@ -126,7 +126,7 @@ def test_skew_is_measured_against_the_public_server_time(tmp_path) -> None:
 
 def test_cli_dry_run_then_status_shows_a_fresh_heartbeat(tmp_path, monkeypatch, capsys) -> None:
     settings = make_settings(tmp_path)
-    clock = FakeClock(T0 - timedelta(seconds=5))
+    clock = FakeClock(T0 + timedelta(seconds=25))
     exchange = FakePublicKraken(clock)
     monkeypatch.setattr(cli, "_exchange_factory", lambda: exchange)
     monkeypatch.setattr(cli, "_clock_factory", lambda: clock)
@@ -146,7 +146,7 @@ def test_cli_dry_run_then_status_shows_a_fresh_heartbeat(tmp_path, monkeypatch, 
 def test_status_reports_healthy_while_heartbeats_are_fresh(tmp_path) -> None:
     from bot import ops
 
-    clock = FakeClock(T0 - timedelta(seconds=5))
+    clock = FakeClock(T0 + timedelta(seconds=25))
     dry, _ = dry_run(tmp_path, clock)
     dry.engine.start(pid=1)
     dry.engine.heartbeat(clock.now(), "tick")

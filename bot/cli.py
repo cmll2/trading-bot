@@ -542,14 +542,23 @@ def _dry_run_command(args: argparse.Namespace, settings: Settings, strategy_id: 
     context = logging_setup.configure(runtime.log_path(settings, "dry-run", strategy_id),
                                       "dry-run", strategy_id)  # fmt: skip
     clock = _clock_factory()
+    # AD-8 step 1: the engine lock is taken before the store is opened or migrated.
+    lock = runtime.EngineLock(runtime.lock_path(db))
+    try:
+        lock.acquire()
+    except runtime.StartRefused as exc:
+        _err(f"REFUSED: {exc}")
+        return EXIT_REFUSED
     try:
         dry = runtime.build_dry_run(
             settings, strategy_id, _exchange_factory(), clock, approval=args.approval
         )
     except runtime.StartRefused as exc:
+        lock.release()
         _err(f"REFUSED: {exc}")
         return EXIT_REFUSED
     except (TransientReadError, RateLimited) as exc:
+        lock.release()
         _err(f"REFUSED: cannot read public market data: {exc}")
         return EXIT_REFUSED
     if args.approval is not None:
@@ -560,7 +569,7 @@ def _dry_run_command(args: argparse.Namespace, settings: Settings, strategy_id: 
     stop = runtime.StopFlag(runtime.stop_path(db))
     stop.install_signal_handlers()
     try:
-        result = runtime.run_loop(dry, stop, max_ticks=args.max_ticks, on_start=context)
+        result = runtime.run_loop(dry, stop, max_ticks=args.max_ticks, lock=lock, on_start=context)
     finally:
         dry.store.close()
     if result.exit_code == runtime.EXIT_REFUSED:

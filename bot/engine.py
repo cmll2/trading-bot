@@ -167,7 +167,9 @@ class Engine:
         self._rules: MarketRules | None = None
         self.run_id: int | None = None
         self._unsettled_since: dict[int, datetime] = {}
+        self._cancel_sent_at: dict[int, datetime] = {}
         self._last_ticker_ok: datetime | None = None
+        self._priced_ticker: Ticker | None = None
 
     # --- lifecycle ----------------------------------------------------------------------
 
@@ -571,12 +573,14 @@ class Engine:
         """Best-effort cancel of every resting order the store knows (fatal exits and
         reconciliation mismatches). Errors are recorded, never raised."""
         rows = self.store.all(
-            "SELECT * FROM orders WHERE state IN ('open', 'partially_filled', 'cancel_requested')"
+            "SELECT * FROM orders "
+            "WHERE state IN ('open', 'partially_filled', 'cancel_requested', 'unknown')"
         )
         for order in rows:
             try:
-                if order["state"] != "cancel_requested":
+                if order["state"] in ("open", "partially_filled"):
                     self._transition(order["order_id"], "cancel_requested", now)
+                # An unknown order may be resting: cancelling by cl_ord_id is safe.
                 self.broker.cancel_order(self.cfg.pair, order["cl_ord_id"])
             except Exception as exc:  # noqa: BLE001 - best effort on a fatal path
                 self.error(now, "cancel_all_resting", exc)
@@ -633,6 +637,9 @@ class Engine:
                     self._set_outcome(sig["signal_id"], "not_filled", "restart_window_passed")
                 continue
             ticker = self._read("get_ticker", self.broker.get_ticker, self.cfg.pair)
+            # Network reads before the AD-28 transaction, never inside it.
+            self.md.closed_candles(self.cfg.pair, self.cfg.timeframe, limit=1)
+            self._rules = self.broker.load_market(self.cfg.pair)
             with self.store.transaction():
                 submit = self._decide_and_open(
                     sig["signal_id"],
@@ -683,7 +690,46 @@ class Engine:
         On a mismatch: a ``reconcile_mismatch`` risk event with both sides, a
         ``halts(reconcile_mismatch)`` row, both sides logged, the bot's own resting orders
         cancelled (best effort), then ``ReconcileMismatch`` is raised so the process exits
-        non-zero (the runtime records ``stop_reason``)."""
+        non-zero (the runtime records ``stop_reason``).
+
+        Before comparing, every live order's fills are ingested and its state synced, so
+        the bot's own legitimate fills are never reported; a difference is re-checked once
+        after another sync (fills may land between two broker reads) before it counts."""
+        self._sync_all_live(now)
+        problems, summary = self._reconcile_problems(now)
+        if problems:
+            self._sync_all_live(self.clock.now())
+            problems, summary = self._reconcile_problems(now)
+        if not problems:
+            log.info("reconciliation OK: %s", summary)
+            return
+        reason = "; ".join(f"{what} {detail}" for what, detail in problems)
+        with self.store.transaction():
+            for what, detail in problems:
+                self._risk_event(
+                    now, "reconcile_mismatch", "reconcile_mismatch", None, what, detail
+                )
+            self.store.execute(
+                "INSERT INTO halts (rule, triggered_at, reason) VALUES (?, ?, ?) "
+                "ON CONFLICT DO NOTHING",
+                ("reconcile_mismatch", iso(now), reason[:1000]),
+            )
+        log.error("RECONCILIATION MISMATCH: %s", reason)
+        self.cancel_all_resting(now)
+        raise ReconcileMismatch(reason)
+
+    def _sync_all_live(self, now: datetime) -> None:
+        marks = ",".join("?" for _ in LIVE_ORDER_STATES)
+        for order in self.store.all(
+            f"SELECT * FROM orders WHERE state IN ({marks})",  # noqa: S608
+            LIVE_ORDER_STATES,
+        ):
+            self._ingest_fills(self._intent(order["intent_id"]), now)
+            fresh = self.store.one("SELECT * FROM orders WHERE order_id = ?", (order["order_id"],))
+            if fresh["state"] in ("open", "partially_filled", "cancel_requested"):
+                self._sync_order(fresh, now)
+
+    def _reconcile_problems(self, now: datetime) -> tuple[list[tuple[str, dict]], str]:
         pair = self.cfg.pair
         problems: list[tuple[str, dict[str, object]]] = []
         exch_open = {
@@ -740,26 +786,11 @@ class Engine:
             )  # fmt: skip
         for tid in sorted(store_fills - set(exch_fills)):
             problems.append(("store fill unknown to the broker", {"trade_id": tid}))
-        if not problems:
-            log.info(
-                "reconciliation OK: %d open orders, base %s, quote %s >= cash %s, %d fills",
-                len(exch_open), base, quote, derived_cash, len(exch_fills),
-            )  # fmt: skip
-            return
-        reason = "; ".join(f"{what} {detail}" for what, detail in problems)
-        with self.store.transaction():
-            for what, detail in problems:
-                self._risk_event(
-                    now, "reconcile_mismatch", "reconcile_mismatch", None, what, detail
-                )
-            self.store.execute(
-                "INSERT INTO halts (rule, triggered_at, reason) VALUES (?, ?, ?) "
-                "ON CONFLICT DO NOTHING",
-                ("reconcile_mismatch", iso(now), reason[:1000]),
-            )
-        log.error("RECONCILIATION MISMATCH: %s", reason)
-        self.cancel_all_resting(now)
-        raise ReconcileMismatch(reason)
+        summary = (
+            f"{len(exch_open)} open orders, base {base}, quote {quote} >= cash {derived_cash}, "
+            f"{len(exch_fills)} fills"
+        )
+        return problems, summary
 
     def _consume_actions(
         self, now: datetime, kinds: tuple[str, ...] | None = None, ticker: Ticker | None = None
@@ -826,6 +857,23 @@ class Engine:
                 wait = timedelta(seconds=2**attempt)
             attempt += 1
             self.clock.sleep_until(self.clock.now() + wait)
+
+    def _record_pricing(self, now: datetime, cl: str, side: str, price: Decimal) -> None:
+        """AD-6: record the bid/ask each order was priced from (``api_calls`` endpoint
+        ``priced_from``), the input of the backtest-vs-paper consistency check."""
+        t = self._priced_ticker
+        detail = {"cl_ord_id": cl, "side": side, "limit": str(price)}
+        if t is not None:
+            detail |= {"bid": str(t.bid), "ask": str(t.ask), "ticker_at": iso(t.ts)}
+        self.store.insert(
+            "api_calls",
+            at=iso(now),
+            endpoint="priced_from",
+            latency_ms=0,
+            ok=1,
+            rate_limited=0,
+            detail_json=json.dumps(detail, sort_keys=True),
+        )
 
     def _api_failure(self, name: str, rate_limited: bool) -> None:
         self.store.insert(
@@ -937,6 +985,7 @@ class Engine:
         """Passive (AD-5): best bid for a buy, best ask for a sell, rounded away from the
         book to the tick. The taker report variant takes the other side (ask for a buy,
         bid for a sell)."""
+        self._priced_ticker = ticker
         tick = self.rules.tick_size
         use_ask = (side == "sell") != (self.cfg.pricing == "aggressive")
         if use_ask:
@@ -1018,7 +1067,10 @@ class Engine:
         last = hist.last_open_at
         if last is None:
             return False
-        self._check_closed(last, now)
+        # The adapter reads the clock when it is called; a slow tick (lookups, retries)
+        # must not look like a future candle, so check against the clock now. The SimClock
+        # never moves within a tick, so the backtest guard is unchanged.
+        self._check_closed(last, self.clock.now())
         signal_id = f"{self.strategy.id}|{self.cfg.pair}|{self.cfg.timeframe}|{iso(last)}"
         if self.store.one("SELECT 1 FROM signals WHERE signal_id = ?", (signal_id,)):
             return False
@@ -1211,6 +1263,7 @@ class Engine:
                 detail_json="{}",
             )
         self._transition(order_id, "submitting", now, submitted_at=iso(now))
+        self._record_pricing(now, cl, intent["side"], price)
         req = OrderRequest(self.cfg.pair, intent["side"], qty, price, cl)
         try:
             ack = self.broker.place_order(req, decision)
@@ -1227,7 +1280,12 @@ class Engine:
             order = self.store.one("SELECT * FROM orders WHERE order_id = ?", (order_id,))
             return self._resolve_unknown(order)
         except (RateLimited, TransientReadError) as exc:
+            # The exchange refused the request before placing anything (rate limit): the
+            # attempt still counts against the submission caps (the conservative side).
             self._transition(order_id, "rejected", now, reject_reason=f"not sent: {exc}")
+            if isinstance(exc, RateLimited):
+                self._api_failure("place_order", True)
+                self.clock.sleep_until(self.clock.now() + timedelta(seconds=exc.retry_after_s))
             return "retry"
         self._transition(
             order_id,
@@ -1378,6 +1436,7 @@ class Engine:
             self._transition(order["order_id"], "cancel_requested", now)
             order = self.store.one("SELECT * FROM orders WHERE order_id = ?", (order["order_id"],))
         if order["state"] == "cancel_requested":
+            self._cancel_sent_at.setdefault(order["order_id"], now)
             try:
                 self.broker.cancel_order(self.cfg.pair, order["cl_ord_id"])
             except (OrderOutcomeUnknown, TransientReadError, RateLimited, OrderRejected) as exc:
@@ -1404,6 +1463,11 @@ class Engine:
         if not completing and self._target_reached(intent_id):
             self._finish(intent_id, now, "done", "filled", None)
             return
+        order = self._live_order(intent_id)
+        if order is not None and order["state"] == "cancel_requested":
+            self._cancel_live(intent, now)  # re-send a cancel that may not have arrived (AD-8)
+            if self._live_order(intent_id) is None:
+                intent = self._intent(intent_id)
         if self._settle_overdue(intent_id, now):
             return
         if completing and self._sellable_now(ticker):
@@ -1644,12 +1708,10 @@ class Engine:
         order = self._live_order(intent_id)
         if order is None or order["state"] != "cancel_requested":
             return False
-        since = self.store.one(
-            "SELECT at FROM order_events WHERE order_id = ? AND to_state = 'cancel_requested' "
-            "ORDER BY event_id DESC",
-            (order["order_id"],),
-        )[0]
-        if now - parse_iso(since) <= self.cfg.fill_settle_timeout:
+        # Measured from the first cancel this process sent: a restart re-sends the cancel
+        # and restarts the clock instead of halting on a stale event time (review finding).
+        since = self._cancel_sent_at.setdefault(order["order_id"], now)
+        if now - since <= self.cfg.fill_settle_timeout:
             return False
         reason = f"order {order['cl_ord_id']}: cancel/fills not settled within timeout"
         with self.store.transaction():

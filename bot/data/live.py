@@ -41,6 +41,7 @@ from bot.data.fetch import FetchError, _parse_row
 
 ApiRecorder = Callable[[str, int, bool, bool, dict[str, Any] | None], None]
 OHLCV_LIMIT = 720  # Kraken's OHLC endpoint returns at most the last 720 candles
+CLOSE_SETTLE = timedelta(seconds=10)  # a candle counts as closed 10 s after its end
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _RATE_LIMIT_ERRORS = (ccxt.RateLimitExceeded, ccxt.DDoSProtection)
 
@@ -121,7 +122,9 @@ class CcxtMarketData:
             return True
         step = timedelta(seconds=TIMEFRAME_SECONDS[key[1]])
         newest = frame["open_at"].iloc[-1].to_pydatetime()
-        return newest + 2 * step <= now  # a newer candle has closed since the last fetch
+        # The frame holds only candles closed at fetch time: refetch once the next one has
+        # closed and settled.
+        return newest + 2 * step + CLOSE_SETTLE <= now
 
     def _fetch(self, pair: str, tf: str) -> pd.DataFrame:
         step_ms = TIMEFRAME_SECONDS[tf] * 1000
@@ -130,10 +133,18 @@ class CcxtMarketData:
             lambda: self._call.exchange.fetch_ohlcv(pair, tf, limit=OHLCV_LIMIT),
             lambda r: {"rows": len(r)},
         )
+        # Only candles closed (plus a settle margin) at FETCH time are kept: the newest row
+        # Kraken returns is still forming, and its values must never be served as closed
+        # later, when its period has ended by the clock but the frame is not refetched
+        # (review finding). The margin also covers a local clock a few seconds ahead.
+        fetched_ms = (self._clock.now() - _EPOCH) / timedelta(milliseconds=1)
+        settle_ms = CLOSE_SETTLE / timedelta(milliseconds=1)
         candles: dict[int, tuple[float, ...]] = {}
         try:
             for raw in rows or []:
                 ts, values = _parse_row(raw, tf, step_ms)
+                if ts + step_ms + settle_ms > fetched_ms:
+                    continue  # forming (or just closed) at fetch time
                 if ts in candles and candles[ts] != values:
                     raise FetchError(f"conflicting {tf} values in one response")
                 candles[ts] = values
